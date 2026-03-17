@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joelkehle/agent-bus/pkg/bus"
+	"github.com/joelkehle/pinakes/pkg/bus"
 )
 
 func signPayload(secret string, payload []byte) string {

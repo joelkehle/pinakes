@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/joelkehle/agent-bus/pkg/bus"
+	"github.com/joelkehle/pinakes/pkg/bus"
 )
 
 type Server struct {

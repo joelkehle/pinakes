@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/joelkehle/agent-bus/pkg/bus"
-	"github.com/joelkehle/agent-bus/pkg/httpapi"
+	"github.com/joelkehle/pinakes/pkg/bus"
+	"github.com/joelkehle/pinakes/pkg/httpapi"
 )
 
 func main() {

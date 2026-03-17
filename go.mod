@@ -1,4 +1,4 @@
-module github.com/joelkehle/agent-bus
+module github.com/joelkehle/pinakes
 
 go 1.24.13
 

@@ -1,4 +1,4 @@
-# agent-bus
+# pinakes
 
 Reusable HTTP agent bus for agentic application composition.
 
@@ -7,7 +7,7 @@ Current contents:
 - `pkg/bus` - core bus runtime and storage backends
 - `pkg/httpapi` - HTTP transport and handlers
 - `pkg/busclient` - Go client SDK
-- `cmd/agent-bus` - reference standalone server
+- `cmd/pinakes` - reference standalone server
 
 Endpoints:
 
@@ -30,7 +30,7 @@ Endpoints:
 Run locally:
 
 ```bash
-go run ./cmd/agent-bus
+go run ./cmd/pinakes
 ```
 
 Runtime config:
@@ -44,4 +44,4 @@ Runtime config:
 
 Contract doc:
 
-- [docs/BUS_HTTP_CONTRACT.md](/home/joelkehle/Projects/agent-bus/docs/BUS_HTTP_CONTRACT.md)
+- [docs/BUS_HTTP_CONTRACT.md](/home/joelkehle/Projects/pinakes/docs/BUS_HTTP_CONTRACT.md)

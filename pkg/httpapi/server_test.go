@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joelkehle/agent-bus/pkg/bus"
+	"github.com/joelkehle/pinakes/pkg/bus"
 )
 
 func newServerForTest() http.Handler {

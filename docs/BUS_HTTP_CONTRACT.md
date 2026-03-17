@@ -1,7 +1,7 @@
 ---
 summary: Frozen HTTP contract and runtime config surface for the current bus implementation in techtransfer-agency.
 read_when:
-  - extracting the bus into agent-bus
+  - extracting the bus into pinakes
   - validating contract compatibility during repo split
   - checking runtime env/config behavior for the current bus
 ---
@@ -10,20 +10,20 @@ read_when:
 
 Last updated: 2026-03-17
 
-Purpose: preserve the extracted bus surface in `agent-bus`.
+Purpose: preserve the extracted bus surface in `pinakes`.
 
 This doc describes the extracted bus contract as implemented by:
 
-- [main.go](/home/joelkehle/Projects/agent-bus/cmd/agent-bus/main.go)
-- [server.go](/home/joelkehle/Projects/agent-bus/pkg/httpapi/server.go)
-- [store.go](/home/joelkehle/Projects/agent-bus/pkg/bus/store.go)
-- [contract_test.go](/home/joelkehle/Projects/agent-bus/pkg/httpapi/contract_test.go)
+- [main.go](/home/joelkehle/Projects/pinakes/cmd/pinakes/main.go)
+- [server.go](/home/joelkehle/Projects/pinakes/pkg/httpapi/server.go)
+- [store.go](/home/joelkehle/Projects/pinakes/pkg/bus/store.go)
+- [contract_test.go](/home/joelkehle/Projects/pinakes/pkg/httpapi/contract_test.go)
 
 ## Freeze Checklist
 
 - [x] bus routes inventoried from `pkg/httpapi/server.go`
 - [x] auth/signature rules inventoried from handlers + store behavior
-- [x] env/flag surface inventoried from `cmd/agent-bus/main.go`, `pkg/httpapi/server.go`, `pkg/bus/store.go`
+- [x] env/flag surface inventoried from `cmd/pinakes/main.go`, `pkg/httpapi/server.go`, `pkg/bus/store.go`
 - [x] current store-selection precedence documented
 - [x] current runtime defaults documented
 - [x] contract tests pin allowlist-gated behavior
@@ -176,7 +176,7 @@ This doc describes the extracted bus contract as implemented by:
 
 ## Runtime Defaults
 
-These values are currently hard-coded in [main.go](/home/joelkehle/Projects/agent-bus/cmd/agent-bus/main.go) and mirrored as fallback defaults in [store.go](/home/joelkehle/Projects/agent-bus/pkg/bus/store.go).
+These values are currently hard-coded in [main.go](/home/joelkehle/Projects/pinakes/cmd/pinakes/main.go) and mirrored as fallback defaults in [store.go](/home/joelkehle/Projects/pinakes/pkg/bus/store.go).
 
 - `GracePeriod = 30s`
 - `ProgressMinInterval = 2s`
@@ -197,6 +197,6 @@ Important current behavior:
 
 ## Contract Owners
 
-- canonical protocol contract tests live in [contract_test.go](/home/joelkehle/Projects/agent-bus/pkg/httpapi/contract_test.go)
+- canonical protocol contract tests live in [contract_test.go](/home/joelkehle/Projects/pinakes/pkg/httpapi/contract_test.go)
 - this repo is now the upstream home for those tests
 - product-level integration tests should stay outside the canonical protocol suite
