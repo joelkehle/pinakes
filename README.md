@@ -44,4 +44,16 @@ Runtime config:
 
 Contract doc:
 
-- [docs/BUS_HTTP_CONTRACT.md](/home/joelkehle/Projects/pinakes/docs/BUS_HTTP_CONTRACT.md)
+- [docs/BUS_HTTP_CONTRACT.md](docs/BUS_HTTP_CONTRACT.md)
+
+## For consumers
+
+Consume the client SDK via `github.com/joelkehle/pinakes/pkg/busclient`.
+
+- Pin released tags in `go.mod`; do not depend on floating branches or pseudo-versions unless you are testing an unreleased change.
+- Treat `pkg/busclient` as the supported integration surface for Go consumers.
+- Breaking protocol or client changes require a major version bump.
+
+## License
+
+This repository is licensed under the PolyForm Noncommercial License 1.0.0.
