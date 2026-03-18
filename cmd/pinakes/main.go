@@ -71,7 +71,7 @@ func main() {
 	}
 
 	h := httpapi.NewServer(store)
-	log.Printf("techtransfer-agency listening on %s", addr)
+	log.Printf("pinakes listening on %s", addr)
 	if err := http.ListenAndServe(addr, h); err != nil {
 		log.Fatal(err)
 	}

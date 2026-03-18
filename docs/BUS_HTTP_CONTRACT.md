@@ -1,5 +1,5 @@
 ---
-summary: Frozen HTTP contract and runtime config surface for the current bus implementation in techtransfer-agency.
+summary: Frozen HTTP contract and runtime config surface for the current bus implementation in pinakes.
 read_when:
   - extracting the bus into pinakes
   - validating contract compatibility during repo split
