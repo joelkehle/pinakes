@@ -37,6 +37,7 @@ type InboxEvent struct {
 type AgentInfo struct {
 	AgentID      string   `json:"agent_id"`
 	Capabilities []string `json:"capabilities"`
+	Description  string   `json:"description,omitempty"`
 	Status       string   `json:"status"`
 }
 
@@ -84,9 +85,14 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, payload []byte
 }
 
 func (c *Client) RegisterAgent(ctx context.Context, agentID, secret string, capabilities []string) error {
+	return c.RegisterAgentWithDescription(ctx, agentID, secret, capabilities, "")
+}
+
+func (c *Client) RegisterAgentWithDescription(ctx context.Context, agentID, secret string, capabilities []string, description string) error {
 	body, _ := json.Marshal(map[string]any{
 		"agent_id":     agentID,
 		"capabilities": capabilities,
+		"description":  strings.TrimSpace(description),
 		"mode":         "pull",
 		"ttl":          120,
 		"secret":       secret,

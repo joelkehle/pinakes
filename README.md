@@ -52,6 +52,7 @@ Consume the client SDK via `github.com/joelkehle/pinakes/pkg/busclient`.
 
 - Pin released tags in `go.mod`; do not depend on floating branches or pseudo-versions unless you are testing an unreleased change.
 - Treat `pkg/busclient` as the supported integration surface for Go consumers.
+- `pkg/busclient` supports agent registration/listing metadata including `description` for routing and UX.
 - Breaking protocol or client changes require a major version bump.
 
 ## License
