@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bufio"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,13 +10,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/joelkehle/pinakes/pkg/bus"
 )
 
@@ -25,21 +30,33 @@ type Server struct {
 	mu            sync.RWMutex
 	agentSecrets  map[string]string
 	agentAllowset map[string]struct{}
+	handler       http.Handler
+	logger        *log.Logger
 }
 
 func NewServer(store bus.API) http.Handler {
-	allowset := map[string]struct{}{}
-	for _, raw := range strings.Split(os.Getenv("AGENT_ALLOWLIST"), ",") {
-		v := strings.TrimSpace(raw)
-		if v != "" {
-			allowset[v] = struct{}{}
+	s, err := NewServerFromEnv(store)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+func NewServerFromEnv(store bus.API) (*Server, error) {
+	allowset := parseAllowlistEnv(os.Getenv("AGENT_ALLOWLIST"))
+	allowlistFile := strings.TrimSpace(os.Getenv("ALLOWLIST_FILE"))
+	if allowlistFile != "" {
+		var err error
+		allowset, err = loadAllowlistFile(allowlistFile)
+		if err != nil {
+			return nil, fmt.Errorf("load allowlist file %s: %w", allowlistFile, err)
 		}
 	}
-
 	s := &Server{
 		store:         store,
 		agentSecrets:  map[string]string{},
 		agentAllowset: allowset,
+		logger:        log.New(os.Stdout, "pinakes ", log.LstdFlags),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/agents/register", s.handleRegisterAgent)
@@ -56,7 +73,137 @@ func NewServer(store bus.API) http.Handler {
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/v1/health", s.handleHealth)
 	mux.HandleFunc("/v1/system/status", s.handleSystemStatus)
-	return mux
+	s.handler = mux
+	return s, nil
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.handler.ServeHTTP(w, r)
+}
+
+func parseAllowlistEnv(raw string) map[string]struct{} {
+	allowset := map[string]struct{}{}
+	for _, entry := range strings.Split(raw, ",") {
+		v := strings.TrimSpace(entry)
+		if v != "" {
+			allowset[v] = struct{}{}
+		}
+	}
+	return allowset
+}
+
+func loadAllowlistFile(path string) (map[string]struct{}, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	allowset := map[string]struct{}{}
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		allowset[line] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return allowset, nil
+}
+
+func (s *Server) WatchAllowlistFile(ctx context.Context, path string) error {
+	cleanPath := filepath.Clean(path)
+	parentDir := filepath.Dir(cleanPath)
+	targetName := filepath.Base(cleanPath)
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	if err := watcher.Add(parentDir); err != nil {
+		_ = watcher.Close()
+		return err
+	}
+
+	go func() {
+		defer watcher.Close()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				s.logger.Printf("WARN allowlist watch error path=%s err=%v", cleanPath, err)
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if filepath.Base(event.Name) != targetName {
+					continue
+				}
+				if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Chmod) == 0 {
+					continue
+				}
+				if err := s.reloadAllowlistFile(cleanPath); err != nil {
+					s.logger.Printf("WARN allowlist reload failed path=%s err=%v", cleanPath, err)
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (s *Server) reloadAllowlistFile(path string) error {
+	next, err := loadAllowlistFile(path)
+	if err != nil {
+		return err
+	}
+	added, removed, total := s.swapAgentAllowset(next)
+	s.logger.Printf(
+		"INFO allowlist reloaded path=%s added=%s removed=%s total=%d",
+		path,
+		strings.Join(added, ","),
+		strings.Join(removed, ","),
+		total,
+	)
+	return nil
+}
+
+func (s *Server) swapAgentAllowset(next map[string]struct{}) ([]string, []string, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	added := diffAllowsetKeys(s.agentAllowset, next)
+	removed := diffAllowsetKeys(next, s.agentAllowset)
+	s.agentAllowset = cloneAllowset(next)
+	return added, removed, len(s.agentAllowset)
+}
+
+func cloneAllowset(src map[string]struct{}) map[string]struct{} {
+	dst := make(map[string]struct{}, len(src))
+	for agentID := range src {
+		dst[agentID] = struct{}{}
+	}
+	return dst
+}
+
+func diffAllowsetKeys(oldSet, newSet map[string]struct{}) []string {
+	var keys []string
+	for agentID := range newSet {
+		if _, ok := oldSet[agentID]; ok {
+			continue
+		}
+		keys = append(keys, agentID)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

@@ -508,6 +508,7 @@ func TestBusConfigSurfaceDocumented(t *testing.T) {
 		"DB_PATH",
 		"STORE_BACKEND",
 		"STATE_FILE",
+		"ALLOWLIST_FILE",
 		"AGENT_ALLOWLIST",
 		"HUMAN_ALLOWLIST",
 		"--db",

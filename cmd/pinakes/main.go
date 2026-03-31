@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joelkehle/pinakes/pkg/bus"
@@ -70,9 +72,18 @@ func main() {
 		}
 	}
 
-	h := httpapi.NewServer(store)
+	server, err := httpapi.NewServerFromEnv(store)
+	if err != nil {
+		log.Fatalf("failed to initialize http server: %v", err)
+	}
+	if allowlistFile := strings.TrimSpace(os.Getenv("ALLOWLIST_FILE")); allowlistFile != "" {
+		if err := server.WatchAllowlistFile(context.Background(), allowlistFile); err != nil {
+			log.Fatalf("failed to watch allowlist file %s: %v", allowlistFile, err)
+		}
+		log.Printf("watching allowlist file %s", allowlistFile)
+	}
 	log.Printf("pinakes listening on %s", addr)
-	if err := http.ListenAndServe(addr, h); err != nil {
+	if err := http.ListenAndServe(addr, server); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -129,7 +129,8 @@ This doc describes the extracted bus contract as implemented by:
 ## Auth Rules
 
 - Agent registration requires a non-empty `secret`.
-- Agent registration is gated by `AGENT_ALLOWLIST` if set.
+- Agent registration is gated by `ALLOWLIST_FILE` if set, otherwise `AGENT_ALLOWLIST`.
+- Removing an agent from the allowlist blocks future registration only; it does not evict already-registered agents mid-session.
 - Message send auth uses the `from` agent secret.
 - Inbox poll auth uses the exact raw query string.
 - Ack auth uses the `agent_id` secret.
@@ -160,8 +161,14 @@ This doc describes the extracted bus contract as implemented by:
 - `STATE_FILE`
   - path for persistent JSON-file backend
   - default: `./data/state.json`
+- `ALLOWLIST_FILE`
+  - path to newline-delimited agent allowlist file
+  - if set, takes precedence over `AGENT_ALLOWLIST`
+  - startup fails if the configured file cannot be read
+  - runtime reload watches the parent directory and keeps the last-good allowset on reload failure
 - `AGENT_ALLOWLIST`
   - comma-separated allowed `agent_id` values for registration
+  - used only when `ALLOWLIST_FILE` is unset
   - empty/unset means allow all
 - `HUMAN_ALLOWLIST`
   - comma-separated allowed human identities for `/v1/inject`

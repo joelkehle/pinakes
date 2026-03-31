@@ -2,13 +2,17 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +20,16 @@ import (
 	"github.com/joelkehle/pinakes/pkg/bus"
 )
 
-func newServerForTest() http.Handler {
+func newServerForTest(t *testing.T) *Server {
+	t.Helper()
+	return newServerForTestWithEnv(t, nil)
+}
+
+func newServerForTestWithEnv(t *testing.T, env map[string]string) *Server {
+	t.Helper()
+	for key, value := range env {
+		t.Setenv(key, value)
+	}
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
 	store := bus.NewStore(bus.Config{
 		GracePeriod:            30 * time.Second,
@@ -30,7 +43,38 @@ func newServerForTest() http.Handler {
 			return now
 		},
 	})
-	return NewServer(store)
+	server, err := NewServerFromEnv(store)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	return server
+}
+
+func writeAllowlistFileAtomically(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
+	content := strings.Join(lines, "\n")
+	if content != "" {
+		content += "\n"
+	}
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		t.Fatalf("write temp allowlist: %v", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatalf("rename allowlist into place: %v", err)
+	}
+}
+
+func waitFor(t *testing.T, label string, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", label)
 }
 
 func sign(secret string, payload []byte) string {
@@ -96,7 +140,7 @@ func mustSendMessage(t *testing.T, h http.Handler, fromSecret string, body map[s
 }
 
 func TestEventsRequiresAuthAndActorHeader(t *testing.T) {
-	h := newServerForTest()
+	h := newServerForTest(t)
 
 	mustRegisterAgent(t, h, "a", "secret-a")
 	mustRegisterAgent(t, h, "b", "secret-b")
@@ -125,8 +169,7 @@ func TestEventsRequiresAuthAndActorHeader(t *testing.T) {
 }
 
 func TestRegisterTrimsAgentIDBeforeAllowlistAndSecretLookup(t *testing.T) {
-	t.Setenv("AGENT_ALLOWLIST", "a,b")
-	h := newServerForTest()
+	h := newServerForTestWithEnv(t, map[string]string{"AGENT_ALLOWLIST": "a,b"})
 
 	mustRegisterAgent(t, h, "  a  ", "secret-a")
 	mustRegisterAgent(t, h, "b", "secret-b")
@@ -143,7 +186,7 @@ func TestRegisterTrimsAgentIDBeforeAllowlistAndSecretLookup(t *testing.T) {
 }
 
 func TestMessagesRejectsTamperedSignature(t *testing.T) {
-	h := newServerForTest()
+	h := newServerForTest(t)
 	mustRegisterAgent(t, h, "a", "secret-a")
 	mustRegisterAgent(t, h, "b", "secret-b")
 
@@ -161,7 +204,7 @@ func TestMessagesRejectsTamperedSignature(t *testing.T) {
 }
 
 func TestMessagesAcceptsSHA256PrefixedSignature(t *testing.T) {
-	h := newServerForTest()
+	h := newServerForTest(t)
 	mustRegisterAgent(t, h, "a", "secret-a")
 	mustRegisterAgent(t, h, "b", "secret-b")
 
@@ -176,7 +219,7 @@ func TestMessagesAcceptsSHA256PrefixedSignature(t *testing.T) {
 }
 
 func TestMessagesRejectsNonHexSignature(t *testing.T) {
-	h := newServerForTest()
+	h := newServerForTest(t)
 	mustRegisterAgent(t, h, "a", "secret-a")
 	mustRegisterAgent(t, h, "b", "secret-b")
 
@@ -190,7 +233,7 @@ func TestMessagesRejectsNonHexSignature(t *testing.T) {
 }
 
 func TestEventsRejectActorThatDoesNotOwnMessage(t *testing.T) {
-	h := newServerForTest()
+	h := newServerForTest(t)
 	mustRegisterAgent(t, h, "a", "secret-a")
 	mustRegisterAgent(t, h, "b", "secret-b")
 	mustRegisterAgent(t, h, "c", "secret-c")
@@ -214,7 +257,7 @@ func TestEventsRejectActorThatDoesNotOwnMessage(t *testing.T) {
 }
 
 func TestInboxRejectsSignatureForDifferentRawQuery(t *testing.T) {
-	h := newServerForTest()
+	h := newServerForTest(t)
 	mustRegisterAgent(t, h, "a", "secret-a")
 	mustRegisterAgent(t, h, "b", "secret-b")
 
@@ -238,7 +281,7 @@ func TestInboxRejectsSignatureForDifferentRawQuery(t *testing.T) {
 }
 
 func TestTopLevelHealthMatchesV1Health(t *testing.T) {
-	h := newServerForTest()
+	h := newServerForTest(t)
 
 	mustRegisterAgent(t, h, "a", "secret-a")
 	rrTop := getWithHeaders(t, h, "/health", nil)
@@ -252,7 +295,7 @@ func TestTopLevelHealthMatchesV1Health(t *testing.T) {
 }
 
 func TestMetricsExposesPrometheusText(t *testing.T) {
-	h := newServerForTest()
+	h := newServerForTest(t)
 	mustRegisterAgent(t, h, "a", "secret-a")
 
 	rr := getWithHeaders(t, h, "/metrics", nil)
@@ -269,5 +312,122 @@ func TestMetricsExposesPrometheusText(t *testing.T) {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %q in metrics output:\n%s", needle, body)
 		}
+	}
+}
+
+func TestNewServerFromEnvFailsWhenAllowlistFileMissing(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing-allowlist.txt")
+	t.Setenv("ALLOWLIST_FILE", missingPath)
+
+	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
+	store := bus.NewStore(bus.Config{
+		GracePeriod:            30 * time.Second,
+		ProgressMinInterval:    2 * time.Second,
+		IdempotencyWindow:      24 * time.Hour,
+		InboxWaitMax:           1 * time.Second,
+		AckTimeout:             10 * time.Second,
+		DefaultMessageTTL:      600 * time.Second,
+		DefaultRegistrationTTL: 60 * time.Second,
+		Clock: func() time.Time {
+			return now
+		},
+	})
+
+	_, err := NewServerFromEnv(store)
+	if err == nil {
+		t.Fatalf("expected missing allowlist file error")
+	}
+	if !strings.Contains(err.Error(), missingPath) {
+		t.Fatalf("expected error to mention path, got %v", err)
+	}
+}
+
+func TestNewServerFromEnvFallsBackToEnvAllowlistWhenFileUnset(t *testing.T) {
+	h := newServerForTestWithEnv(t, map[string]string{"AGENT_ALLOWLIST": "alpha,beta"})
+
+	denied := postJSON(t, h, "/v1/agents/register", map[string]any{
+		"agent_id": "gamma", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-gamma",
+	}, nil)
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", denied.Code, denied.Body.String())
+	}
+
+	allowed := postJSON(t, h, "/v1/agents/register", map[string]any{
+		"agent_id": "alpha", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-alpha",
+	}, nil)
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", allowed.Code, allowed.Body.String())
+	}
+}
+
+func TestAllowlistWatcherReloadsAtomicRenameAndPreservesLiveAgent(t *testing.T) {
+	dir := t.TempDir()
+	allowlistPath := filepath.Join(dir, "allowlist.txt")
+	writeAllowlistFileAtomically(t, allowlistPath, "# comment", "a", "b")
+
+	server := newServerForTestWithEnv(t, map[string]string{"ALLOWLIST_FILE": allowlistPath})
+	var logBuf bytes.Buffer
+	server.logger = log.New(&logBuf, "", 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.WatchAllowlistFile(ctx, allowlistPath); err != nil {
+		t.Fatalf("watch allowlist: %v", err)
+	}
+
+	mustRegisterAgent(t, server, "a", "secret-a")
+	mustRegisterAgent(t, server, "b", "secret-b")
+
+	writeAllowlistFileAtomically(t, allowlistPath, "b", "c")
+	waitFor(t, "allowlist add/remove reload", func() bool {
+		return server.isAgentAllowed("c") && !server.isAgentAllowed("a")
+	})
+
+	rrReRegister := postJSON(t, server, "/v1/agents/register", map[string]any{
+		"agent_id": "a", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-a-2",
+	}, nil)
+	if rrReRegister.Code != http.StatusUnauthorized {
+		t.Fatalf("expected re-register denial after removal, got %d body=%s", rrReRegister.Code, rrReRegister.Body.String())
+	}
+
+	sendBody := map[string]any{
+		"to": "b", "from": "a", "request_id": "rid-live-agent", "type": "request", "body": "still works",
+	}
+	blob, _ := json.Marshal(sendBody)
+	rrSend := postJSON(t, server, "/v1/messages", sendBody, map[string]string{"X-Bus-Signature": sign("secret-a", blob)})
+	if rrSend.Code != http.StatusOK {
+		t.Fatalf("expected existing agent to keep working, got %d body=%s", rrSend.Code, rrSend.Body.String())
+	}
+
+	if !strings.Contains(logBuf.String(), "allowlist reloaded") {
+		t.Fatalf("expected reload log, got %q", logBuf.String())
+	}
+}
+
+func TestAllowlistWatcherKeepsLastGoodSetOnReloadError(t *testing.T) {
+	dir := t.TempDir()
+	allowlistPath := filepath.Join(dir, "allowlist.txt")
+	writeAllowlistFileAtomically(t, allowlistPath, "a", "b")
+
+	server := newServerForTestWithEnv(t, map[string]string{"ALLOWLIST_FILE": allowlistPath})
+	var logBuf bytes.Buffer
+	server.logger = log.New(&logBuf, "", 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.WatchAllowlistFile(ctx, allowlistPath); err != nil {
+		t.Fatalf("watch allowlist: %v", err)
+	}
+
+	brokenPath := filepath.Join(dir, "allowlist.bak")
+	if err := os.Rename(allowlistPath, brokenPath); err != nil {
+		t.Fatalf("rename allowlist away: %v", err)
+	}
+
+	waitFor(t, "reload error log", func() bool {
+		return strings.Contains(logBuf.String(), "allowlist reload failed")
+	})
+	if !server.isAgentAllowed("a") || !server.isAgentAllowed("b") {
+		t.Fatalf("expected last-good allowset to remain active after reload failure")
 	}
 }
