@@ -239,6 +239,181 @@ func TestContractAllEndpointsPersistentBackend(t *testing.T) {
 	runContractAllEndpoints(t, newContractServerPersistent(t))
 }
 
+func TestContractPassportRegistrationRoundTrip(t *testing.T) {
+	ts := httptest.NewServer(newContractServer())
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	c := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "legacy", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-legacy",
+	}, nil), http.StatusOK)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id":       "passport",
+		"mode":           "pull",
+		"capabilities":   []string{"x", "y"},
+		"secret":         "secret-passport",
+		"version":        "v0.5.0",
+		"description":    "Passport-capable worker.",
+		"agent_class":    "worker",
+		"mutation_class": "observe",
+		"build": map[string]any{
+			"commit": "abc1234",
+			"dirty":  false,
+		},
+		"meta": map[string]any{
+			"owner":        "pinakes",
+			"repo":         "github.com/joelkehle/pinakes",
+			"health_url":   "http://passport/health",
+			"dependencies": []string{"sqlite", "openai-api"},
+		},
+	}, nil), http.StatusOK)
+
+	body := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/agents", nil, nil), http.StatusOK)
+	var resp struct {
+		Agents []map[string]any `json:"agents"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode agents: %v", err)
+	}
+	if len(resp.Agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d body=%s", len(resp.Agents), string(body))
+	}
+
+	var legacy, passport map[string]any
+	for _, agent := range resp.Agents {
+		switch agent["agent_id"] {
+		case "legacy":
+			legacy = agent
+		case "passport":
+			passport = agent
+		}
+	}
+	if legacy == nil || passport == nil {
+		t.Fatalf("expected legacy and passport agents in response: %s", string(body))
+	}
+	if _, ok := legacy["version"]; ok {
+		t.Fatalf("legacy agent should omit version: %v", legacy)
+	}
+	if _, ok := legacy["build"]; ok {
+		t.Fatalf("legacy agent should omit build: %v", legacy)
+	}
+	if _, ok := legacy["meta"]; ok {
+		t.Fatalf("legacy agent should omit meta: %v", legacy)
+	}
+	if got := passport["version"]; got != "v0.5.0" {
+		t.Fatalf("version=%v want v0.5.0", got)
+	}
+	if got := passport["agent_class"]; got != "worker" {
+		t.Fatalf("agent_class=%v want worker", got)
+	}
+	if got := passport["mutation_class"]; got != "observe" {
+		t.Fatalf("mutation_class=%v want observe", got)
+	}
+	build, ok := passport["build"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected build object, got %T (%v)", passport["build"], passport["build"])
+	}
+	if got := build["commit"]; got != "abc1234" {
+		t.Fatalf("build.commit=%v want abc1234", got)
+	}
+	if got := build["dirty"]; got != false {
+		t.Fatalf("build.dirty=%v want false", got)
+	}
+	meta, ok := passport["meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected meta object, got %T (%v)", passport["meta"], passport["meta"])
+	}
+	if got := meta["health_url"]; got != "http://passport/health" {
+		t.Fatalf("meta.health_url=%v want http://passport/health", got)
+	}
+}
+
+func TestContractPassportValidation(t *testing.T) {
+	ts := httptest.NewServer(newContractServer())
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	c := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+
+	invalidClass := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "bad-class", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret", "agent_class": "router",
+	}, nil), http.StatusBadRequest)
+	if !bytes.Contains(invalidClass, []byte("agent_class must be worker or orchestrator")) {
+		t.Fatalf("unexpected invalid class response: %s", string(invalidClass))
+	}
+
+	invalidMutation := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "bad-mutation", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret", "mutation_class": "write",
+	}, nil), http.StatusBadRequest)
+	if !bytes.Contains(invalidMutation, []byte("mutation_class must be observe, recommend, or mutate")) {
+		t.Fatalf("unexpected invalid mutation response: %s", string(invalidMutation))
+	}
+}
+
+func TestContractPassportReregistrationUpdatesFields(t *testing.T) {
+	ts := httptest.NewServer(newContractServer())
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	c := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+
+	register := func(version, description, mutationClass, commit string, dirty bool) {
+		mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+			"agent_id":       "passport",
+			"mode":           "pull",
+			"capabilities":   []string{"x"},
+			"secret":         "secret-passport",
+			"version":        version,
+			"description":    description,
+			"agent_class":    "worker",
+			"mutation_class": mutationClass,
+			"build": map[string]any{
+				"commit": commit,
+				"dirty":  dirty,
+			},
+		}, nil), http.StatusOK)
+	}
+
+	register("v0.5.0", "first", "observe", "abc1234", false)
+	register("v0.5.1", "second", "recommend", "def5678", true)
+
+	body := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/agents", nil, nil), http.StatusOK)
+	var resp struct {
+		Agents []struct {
+			AgentID       string `json:"agent_id"`
+			Version       string `json:"version"`
+			Description   string `json:"description"`
+			AgentClass    string `json:"agent_class"`
+			MutationClass string `json:"mutation_class"`
+			Build         struct {
+				Commit string `json:"commit"`
+				Dirty  bool   `json:"dirty"`
+			} `json:"build"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode agents response: %v", err)
+	}
+	if len(resp.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d body=%s", len(resp.Agents), string(body))
+	}
+	got := resp.Agents[0]
+	if got.Version != "v0.5.1" || got.Description != "second" || got.AgentClass != "worker" || got.MutationClass != "recommend" || got.Build.Commit != "def5678" || !got.Build.Dirty {
+		t.Fatalf("unexpected re-registration payload: %+v", got)
+	}
+}
+
 type sseEvent struct {
 	ID   string
 	Type string

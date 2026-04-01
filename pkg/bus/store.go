@@ -142,6 +142,42 @@ func dedupeKey(from, to, requestID string) string {
 	return from + "\x1f" + to + "\x1f" + requestID
 }
 
+func normalizeBuildInfo(in *BuildInfo) *BuildInfo {
+	if in == nil {
+		return nil
+	}
+	out := &BuildInfo{
+		Commit: strings.TrimSpace(in.Commit),
+		Dirty:  in.Dirty,
+	}
+	if out.Commit == "" && !out.Dirty {
+		return nil
+	}
+	return out
+}
+
+func normalizeAgentMeta(in *AgentMeta) *AgentMeta {
+	if in == nil {
+		return nil
+	}
+	out := &AgentMeta{
+		Owner:     strings.TrimSpace(in.Owner),
+		Repo:      strings.TrimSpace(in.Repo),
+		HealthURL: strings.TrimSpace(in.HealthURL),
+	}
+	for _, dep := range in.Dependencies {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		out.Dependencies = append(out.Dependencies, dep)
+	}
+	if out.Owner == "" && out.Repo == "" && out.HealthURL == "" && len(out.Dependencies) == 0 {
+		return nil
+	}
+	return out
+}
+
 func isTerminal(state MessageState) bool {
 	switch state {
 	case StateCompleted, StateRejected, StateError:
@@ -363,25 +399,40 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if mode == AgentModePush && strings.TrimSpace(input.CallbackURL) == "" {
 		return nil, newError(CodeValidation, "callback_url required for push mode", false, 0)
 	}
+	agentClass := strings.TrimSpace(input.AgentClass)
+	if agentClass != "" && agentClass != "worker" && agentClass != "orchestrator" {
+		return nil, newError(CodeValidation, "agent_class must be worker or orchestrator", false, 0)
+	}
+	mutationClass := strings.TrimSpace(input.MutationClass)
+	if mutationClass != "" && mutationClass != "observe" && mutationClass != "recommend" && mutationClass != "mutate" {
+		return nil, newError(CodeValidation, "mutation_class must be observe, recommend, or mutate", false, 0)
+	}
 	ttl := input.TTLSeconds
 	if ttl <= 0 {
 		ttl = int(s.cfg.DefaultRegistrationTTL.Seconds())
 	}
+	build := normalizeBuildInfo(input.Build)
+	meta := normalizeAgentMeta(input.Meta)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(now)
 
 	agent := &Agent{
-		AgentID:      agentID,
-		Capabilities: append([]string{}, input.Capabilities...),
-		Description:  strings.TrimSpace(input.Description),
-		Mode:         mode,
-		CallbackURL:  strings.TrimSpace(input.CallbackURL),
-		Status:       AgentStatusActive,
-		RegisteredAt: now,
-		ExpiresAt:    now.Add(time.Duration(ttl) * time.Second),
-		TTLSeconds:   ttl,
+		AgentID:       agentID,
+		Capabilities:  cloneStrings(input.Capabilities),
+		Version:       strings.TrimSpace(input.Version),
+		Description:   strings.TrimSpace(input.Description),
+		AgentClass:    agentClass,
+		MutationClass: mutationClass,
+		Build:         build,
+		Meta:          meta,
+		Mode:          mode,
+		CallbackURL:   strings.TrimSpace(input.CallbackURL),
+		Status:        AgentStatusActive,
+		RegisteredAt:  now,
+		ExpiresAt:     now.Add(time.Duration(ttl) * time.Second),
+		TTLSeconds:    ttl,
 	}
 	if existing, ok := s.agents[agentID]; ok {
 		agent.RegisteredAt = existing.RegisteredAt
@@ -404,7 +455,7 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 		now,
 	)
 
-	cp := *agent
+	cp := cloneAgent(agent)
 	return &cp, nil
 }
 
@@ -433,8 +484,7 @@ func (s *Store) ListAgents(capability string) []Agent {
 				continue
 			}
 		}
-		cp := *a
-		out = append(out, cp)
+		out = append(out, cloneAgent(a))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AgentID < out[j].AgentID })
 	return out

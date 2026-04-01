@@ -27,7 +27,12 @@ const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS agents (
 	agent_id      TEXT PRIMARY KEY,
 	capabilities  TEXT NOT NULL DEFAULT '[]',
+	version       TEXT NOT NULL DEFAULT '',
 	description   TEXT NOT NULL DEFAULT '',
+	agent_class   TEXT NOT NULL DEFAULT '',
+	mutation_class TEXT NOT NULL DEFAULT '',
+	build         TEXT,
+	meta          TEXT,
 	mode          TEXT NOT NULL DEFAULT 'pull',
 	callback_url  TEXT NOT NULL DEFAULT '',
 	status        TEXT NOT NULL DEFAULT 'active',
@@ -91,6 +96,10 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+	if err := ensureAgentColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate agent schema: %w", err)
+	}
 
 	inner := NewStore(cfg)
 	s := &SQLiteStore{
@@ -104,6 +113,53 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 	}
 
 	return s, nil
+}
+
+func ensureAgentColumns(db *sqlx.DB) error {
+	rows, err := db.Query("PRAGMA table_info(agents)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	cols := map[string]struct{}{}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			typ        string
+			notNull    int
+			defaultV   sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultV, &primaryKey); err != nil {
+			return err
+		}
+		cols[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	migrations := []struct {
+		name string
+		sql  string
+	}{
+		{name: "version", sql: `ALTER TABLE agents ADD COLUMN version TEXT NOT NULL DEFAULT ''`},
+		{name: "agent_class", sql: `ALTER TABLE agents ADD COLUMN agent_class TEXT NOT NULL DEFAULT ''`},
+		{name: "mutation_class", sql: `ALTER TABLE agents ADD COLUMN mutation_class TEXT NOT NULL DEFAULT ''`},
+		{name: "build", sql: `ALTER TABLE agents ADD COLUMN build TEXT`},
+		{name: "meta", sql: `ALTER TABLE agents ADD COLUMN meta TEXT`},
+	}
+	for _, migration := range migrations {
+		if _, ok := cols[migration.name]; ok {
+			continue
+		}
+		if _, err := db.Exec(migration.sql); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) Close() error {
@@ -154,7 +210,7 @@ func (s *SQLiteStore) loadCounters() error {
 }
 
 func (s *SQLiteStore) loadAgents() error {
-	rows, err := s.db.Query("SELECT agent_id, capabilities, description, mode, callback_url, status, registered_at, expires_at, ttl_seconds FROM agents")
+	rows, err := s.db.Query("SELECT agent_id, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds FROM agents")
 	if err != nil {
 		return err
 	}
@@ -162,10 +218,19 @@ func (s *SQLiteStore) loadAgents() error {
 	for rows.Next() {
 		var a Agent
 		var capsJSON, registeredAt, expiresAt string
-		if err := rows.Scan(&a.AgentID, &capsJSON, &a.Description, &a.Mode, &a.CallbackURL, &a.Status, &registeredAt, &expiresAt, &a.TTLSeconds); err != nil {
+		var buildJSON, metaJSON sql.NullString
+		if err := rows.Scan(&a.AgentID, &capsJSON, &a.Version, &a.Description, &a.AgentClass, &a.MutationClass, &buildJSON, &metaJSON, &a.Mode, &a.CallbackURL, &a.Status, &registeredAt, &expiresAt, &a.TTLSeconds); err != nil {
 			return err
 		}
 		_ = json.Unmarshal([]byte(capsJSON), &a.Capabilities)
+		if buildJSON.Valid && buildJSON.String != "" {
+			a.Build = &BuildInfo{}
+			_ = json.Unmarshal([]byte(buildJSON.String), a.Build)
+		}
+		if metaJSON.Valid && metaJSON.String != "" {
+			a.Meta = &AgentMeta{}
+			_ = json.Unmarshal([]byte(metaJSON.String), a.Meta)
+		}
 		a.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
 		a.ExpiresAt, _ = time.Parse(time.RFC3339Nano, expiresAt)
 		s.inner.agents[a.AgentID] = &a
@@ -292,11 +357,16 @@ func nullableJSON(v any) sql.NullString {
 }
 
 func (s *SQLiteStore) saveAgent(a *Agent) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO agents (agent_id, capabilities, description, mode, callback_url, status, registered_at, expires_at, ttl_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO agents (agent_id, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.AgentID,
 		marshalJSON(a.Capabilities),
+		a.Version,
 		a.Description,
+		a.AgentClass,
+		a.MutationClass,
+		nullableJSON(a.Build),
+		nullableJSON(a.Meta),
 		string(a.Mode),
 		a.CallbackURL,
 		string(a.Status),

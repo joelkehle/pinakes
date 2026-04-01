@@ -34,11 +34,43 @@ type InboxEvent struct {
 	CreatedAt      time.Time    `json:"created_at"`
 }
 
+type BuildInfo struct {
+	Commit string `json:"commit,omitempty"`
+	Dirty  bool   `json:"dirty"`
+}
+
+type AgentMeta struct {
+	Owner        string   `json:"owner,omitempty"`
+	Repo         string   `json:"repo,omitempty"`
+	HealthURL    string   `json:"health_url,omitempty"`
+	Dependencies []string `json:"dependencies,omitempty"`
+}
+
 type AgentInfo struct {
-	AgentID      string   `json:"agent_id"`
-	Capabilities []string `json:"capabilities"`
-	Description  string   `json:"description,omitempty"`
-	Status       string   `json:"status"`
+	AgentID       string     `json:"agent_id"`
+	Capabilities  []string   `json:"capabilities"`
+	Version       string     `json:"version,omitempty"`
+	Description   string     `json:"description,omitempty"`
+	AgentClass    string     `json:"agent_class,omitempty"`
+	MutationClass string     `json:"mutation_class,omitempty"`
+	Build         *BuildInfo `json:"build,omitempty"`
+	Meta          *AgentMeta `json:"meta,omitempty"`
+	Status        string     `json:"status"`
+}
+
+type RegisterAgentRequest struct {
+	AgentID       string     `json:"agent_id"`
+	Secret        string     `json:"secret"`
+	Capabilities  []string   `json:"capabilities"`
+	Version       string     `json:"version,omitempty"`
+	Description   string     `json:"description,omitempty"`
+	AgentClass    string     `json:"agent_class,omitempty"`
+	MutationClass string     `json:"mutation_class,omitempty"`
+	Build         *BuildInfo `json:"build,omitempty"`
+	Meta          *AgentMeta `json:"meta,omitempty"`
+	Mode          string     `json:"mode"`
+	CallbackURL   string     `json:"callback_url,omitempty"`
+	TTL           int        `json:"ttl"`
 }
 
 type Client struct {
@@ -89,14 +121,24 @@ func (c *Client) RegisterAgent(ctx context.Context, agentID, secret string, capa
 }
 
 func (c *Client) RegisterAgentWithDescription(ctx context.Context, agentID, secret string, capabilities []string, description string) error {
-	body, _ := json.Marshal(map[string]any{
-		"agent_id":     agentID,
-		"capabilities": capabilities,
-		"description":  strings.TrimSpace(description),
-		"mode":         "pull",
-		"ttl":          120,
-		"secret":       secret,
+	return c.RegisterAgentWithPassport(ctx, RegisterAgentRequest{
+		AgentID:      agentID,
+		Secret:       secret,
+		Capabilities: capabilities,
+		Description:  strings.TrimSpace(description),
+		Mode:         "pull",
+		TTL:          120,
 	})
+}
+
+func (c *Client) RegisterAgentWithPassport(ctx context.Context, req RegisterAgentRequest) error {
+	if strings.TrimSpace(req.Mode) == "" {
+		req.Mode = "pull"
+	}
+	if req.TTL <= 0 {
+		req.TTL = 120
+	}
+	body, _ := json.Marshal(req)
 	_, _, err := c.DoJSON(ctx, http.MethodPost, "/v1/agents/register", body, nil)
 	return err
 }

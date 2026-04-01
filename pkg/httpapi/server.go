@@ -350,13 +350,18 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		AgentID      string   `json:"agent_id"`
-		Capabilities []string `json:"capabilities"`
-		Description  string   `json:"description"`
-		Mode         string   `json:"mode"`
-		CallbackURL  string   `json:"callback_url"`
-		TTL          int      `json:"ttl"`
-		Secret       string   `json:"secret"`
+		AgentID       string         `json:"agent_id"`
+		Capabilities  []string       `json:"capabilities"`
+		Version       string         `json:"version"`
+		Description   string         `json:"description"`
+		AgentClass    string         `json:"agent_class"`
+		MutationClass string         `json:"mutation_class"`
+		Build         *bus.BuildInfo `json:"build"`
+		Meta          *bus.AgentMeta `json:"meta"`
+		Mode          string         `json:"mode"`
+		CallbackURL   string         `json:"callback_url"`
+		TTL           int            `json:"ttl"`
+		Secret        string         `json:"secret"`
 	}
 	if err := decodeJSONBytes(blob, &req); err != nil {
 		writeBusError(w, bus.NewValidationJSONError(err))
@@ -373,12 +378,17 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agent, err := s.store.RegisterAgent(bus.RegisterAgentInput{
-		AgentID:      req.AgentID,
-		Capabilities: req.Capabilities,
-		Description:  req.Description,
-		Mode:         bus.AgentMode(req.Mode),
-		CallbackURL:  req.CallbackURL,
-		TTLSeconds:   req.TTL,
+		AgentID:       req.AgentID,
+		Capabilities:  req.Capabilities,
+		Version:       req.Version,
+		Description:   req.Description,
+		AgentClass:    req.AgentClass,
+		MutationClass: req.MutationClass,
+		Build:         req.Build,
+		Meta:          req.Meta,
+		Mode:          bus.AgentMode(req.Mode),
+		CallbackURL:   req.CallbackURL,
+		TTLSeconds:    req.TTL,
 	})
 	if err != nil {
 		writeBusError(w, err)

@@ -55,16 +55,33 @@ type Attachment struct {
 	SHA256      string `json:"sha256,omitempty"`
 }
 
+type BuildInfo struct {
+	Commit string `json:"commit,omitempty"`
+	Dirty  bool   `json:"dirty"`
+}
+
+type AgentMeta struct {
+	Owner        string   `json:"owner,omitempty"`
+	Repo         string   `json:"repo,omitempty"`
+	HealthURL    string   `json:"health_url,omitempty"`
+	Dependencies []string `json:"dependencies,omitempty"`
+}
+
 type Agent struct {
-	AgentID      string      `json:"agent_id"`
-	Capabilities []string    `json:"capabilities"`
-	Description  string      `json:"description,omitempty"`
-	Mode         AgentMode   `json:"mode"`
-	CallbackURL  string      `json:"callback_url,omitempty"`
-	Status       AgentStatus `json:"status"`
-	RegisteredAt time.Time   `json:"registered_at"`
-	ExpiresAt    time.Time   `json:"expires_at"`
-	TTLSeconds   int         `json:"-"`
+	AgentID       string      `json:"agent_id"`
+	Capabilities  []string    `json:"capabilities"`
+	Version       string      `json:"version,omitempty"`
+	Description   string      `json:"description,omitempty"`
+	AgentClass    string      `json:"agent_class,omitempty"`
+	MutationClass string      `json:"mutation_class,omitempty"`
+	Build         *BuildInfo  `json:"build,omitempty"`
+	Meta          *AgentMeta  `json:"meta,omitempty"`
+	Mode          AgentMode   `json:"mode"`
+	CallbackURL   string      `json:"callback_url,omitempty"`
+	Status        AgentStatus `json:"status"`
+	RegisteredAt  time.Time   `json:"registered_at"`
+	ExpiresAt     time.Time   `json:"expires_at"`
+	TTLSeconds    int         `json:"-"`
 }
 
 type Conversation struct {
@@ -119,12 +136,49 @@ type ObserveEvent struct {
 }
 
 type RegisterAgentInput struct {
-	AgentID      string
-	Capabilities []string
-	Description  string
-	Mode         AgentMode
-	CallbackURL  string
-	TTLSeconds   int
+	AgentID       string
+	Capabilities  []string
+	Version       string
+	Description   string
+	AgentClass    string
+	MutationClass string
+	Build         *BuildInfo
+	Meta          *AgentMeta
+	Mode          AgentMode
+	CallbackURL   string
+	TTLSeconds    int
+}
+
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]string{}, in...)
+}
+
+func cloneBuildInfo(in *BuildInfo) *BuildInfo {
+	if in == nil {
+		return nil
+	}
+	cp := *in
+	return &cp
+}
+
+func cloneAgentMeta(in *AgentMeta) *AgentMeta {
+	if in == nil {
+		return nil
+	}
+	cp := *in
+	cp.Dependencies = cloneStrings(in.Dependencies)
+	return &cp
+}
+
+func cloneAgent(in *Agent) Agent {
+	cp := *in
+	cp.Capabilities = cloneStrings(in.Capabilities)
+	cp.Build = cloneBuildInfo(in.Build)
+	cp.Meta = cloneAgentMeta(in.Meta)
+	return cp
 }
 
 type CreateConversationInput struct {

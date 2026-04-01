@@ -29,7 +29,18 @@ func TestSQLiteRoundTrip(t *testing.T) {
 		t.Fatalf("new sqlite store: %v", err)
 	}
 
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{
+		AgentID:       "a",
+		Mode:          AgentModePull,
+		Capabilities:  []string{"x"},
+		TTLSeconds:    60,
+		Version:       "v0.5.0",
+		Description:   "SQLite passport test agent.",
+		AgentClass:    "worker",
+		MutationClass: "observe",
+		Build:         &BuildInfo{Commit: "abc1234", Dirty: false},
+		Meta:          &AgentMeta{Owner: "pinakes", Repo: "github.com/joelkehle/pinakes", HealthURL: "http://a/health", Dependencies: []string{"sqlite"}},
+	}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
 	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
@@ -57,6 +68,18 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	agents := s2.ListAgents("")
 	if len(agents) != 2 {
 		t.Fatalf("expected 2 agents after restore, got %d", len(agents))
+	}
+	if agents[0].AgentID != "a" {
+		t.Fatalf("expected first agent to sort as a, got %s", agents[0].AgentID)
+	}
+	if agents[0].Version != "v0.5.0" || agents[0].AgentClass != "worker" || agents[0].MutationClass != "observe" {
+		t.Fatalf("passport fields missing after restore: %+v", agents[0])
+	}
+	if agents[0].Build == nil || agents[0].Build.Commit != "abc1234" || agents[0].Build.Dirty {
+		t.Fatalf("build missing after restore: %#v", agents[0].Build)
+	}
+	if agents[0].Meta == nil || agents[0].Meta.HealthURL != "http://a/health" || len(agents[0].Meta.Dependencies) != 1 {
+		t.Fatalf("meta missing after restore: %#v", agents[0].Meta)
 	}
 
 	// Messages should be loadable from the conversation.
