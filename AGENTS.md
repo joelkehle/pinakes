@@ -14,7 +14,7 @@ READ `~/Projects/shared/agent-scripts/AGENTS.MD` BEFORE ANYTHING (skip if missin
 # Repo-Specific Rules
 
 - This is shared infrastructure. Changes here affect `ucla-tdg/ucla-tdg-ip-agents`, `jk/jk-email-agents`, and `ucla-tdg/ucla-tdg-email-triage`.
-- Current beelink runtime converges JK and UCLA traffic onto host `:8080`; that is current state, not intended final split. Check `shared/manager/docs/services/port-allocations.md`.
+- Current beelink runtime split: UCLA bus on `:8080`, JK bus on `:8081`. Check `shared/manager/docs/services/port-allocations.md`.
 - Bus protocol changes must update `docs/BUS_HTTP_CONTRACT.md`.
 - `busclient` is the Go package consumed by all agent repos. Breaking changes to the client interface require version bumps and coordinated updates across consumers.
 - Agent allowlist source of truth: `~/Projects/shared/manager/ops/config/allowlist.txt`. Bus hot-reloads from this file via `ALLOWLIST_FILE` env var.
