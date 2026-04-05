@@ -18,6 +18,8 @@ The bus HTTP contract (`BUS_HTTP_CONTRACT.md`) defines what the bus exposes. Thi
 
 Agent authors are free to build agents however they want, in any language. But agents must present a standard passport to join the bus, and must behave predictably so they can be operated safely alongside other agents.
 
+Bus-side passport registration and listing support shipped in `pinakes v0.2.0`. Treat `v0.2.0+` as the clean passport-capable baseline. Earlier bus versions may tolerate extra fields, but they are compatibility-only and do not define the steady-state integration surface.
+
 Core distinction:
 
 - **Bus registration** means "reachable participant" — the agent exists and can exchange messages.
@@ -126,7 +128,7 @@ Operational consequence: manager should rely on manifest health addresses in ste
 
 ### Protocol delta
 
-See `BUS_HTTP_CONTRACT.md` "Passport Extensions" for the exact wire-level changes. The bus accepts registration without the new fields during migration. Compliant agents MUST provide them.
+See `BUS_HTTP_CONTRACT.md` "Passport Extensions" for the exact wire-level changes. The bus-side passport slice shipped in `v0.2.0`. The bus still accepts legacy registration for backward compatibility with pre-`v0.2.0` callers, but compliant agents MUST provide the full passport.
 
 ## Ring 1: Citizenship (MUST)
 

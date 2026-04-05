@@ -1,24 +1,24 @@
 ---
-summary: Concrete checklist of pinakes code changes needed to support the passport-capable registration contract.
+summary: Historical record of the pinakes changes that shipped the passport-capable registration contract in v0.2.0.
 read_when:
-  - implementing passport fields in pinakes
-  - reviewing a PR that adds registration extensions
-  - planning the pinakes release that enables citizenship
+  - auditing what shipped in pinakes v0.2.0
+  - checking which passport items were part of the v0.2.0 baseline
+  - reviewing follow-up work against the shipped passport slice
 status: working draft
 ---
 
-# Protocol Delta: Current Contract to Passport-Capable Contract
+# Protocol Delta: v0.2.0 Passport Baseline
 
 Last updated: 2026-03-31
 
 ## Scope
 
-This is the implementation checklist for extending the pinakes bus to support the agent citizenship passport. Each item is a discrete, testable change. No item changes existing behavior — all additions are backwards-compatible.
+This doc records the pinakes changes that shipped the passport-capable bus baseline in `v0.2.0`. It is no longer a forward plan. It is the historical delta for the additive registration and listing work that landed without breaking older callers.
 
 ## Prerequisites
 
 - Hot-reloadable allowlist (Fix 1 from `BUS_STABILITY_SPEC.md`) — shipped in v0.1.4.
-- Compose v2 migration and bus stack separation — in progress per stability spec.
+- Compose v2 migration and bus stack separation — separate infra work, not part of the `v0.2.0` passport slice.
 
 ## Changes
 
@@ -68,7 +68,7 @@ type AgentMeta struct {
 **Behavior:**
 - All new fields are parsed from registration JSON if present.
 - Missing new fields: registration succeeds; legacy callers remain compatible.
-- Updated on each heartbeat (re-registration). Version changes are normal (deploy in progress).
+- Updated on each heartbeat (re-registration). Version changes during deploys are normal.
 - `secret` field remains excluded from JSON serialization (existing behavior).
 
 **Validation:**
@@ -98,22 +98,15 @@ type AgentMeta struct {
 
 **File:** `pkg/httpapi/server.go` (handleAcks)
 
-Currently accepts any string in `status`. Pin to allowed values:
+Not part of the shipped passport baseline.
 
-- `processed` — handled successfully.
-- `rejected` — refused (wrong type, validation failure).
-- `error` — processing failed.
+Current bus behavior remains:
 
-**Behavior (matches wire contract migration policy):**
-- Unknown `status` values: accept with warning log. This is a migration stance — existing agents may use other strings. The wire contract (`BUS_HTTP_CONTRACT.md`) documents `processed`/`rejected`/`error` as canonical, with unknown values tolerated during migration.
-- `reason` field: SHOULD be present when `status` is `rejected` or `error`. Log warning if missing but don't reject. Same migration stance as status.
+- `accepted` — request accepted and moved to execution
+- `rejected` — request refused
+- other status values are rejected
 
-**Tests:**
-- [ ] Ack with `processed`: accepted.
-- [ ] Ack with `rejected` + reason: accepted.
-- [ ] Ack with `error` + reason: accepted.
-- [ ] Ack with unknown status: accepted with warning log.
-- [ ] Ack with `error` but no reason: accepted with warning log.
+The ack contract should be tracked separately from passport support. It is not part of the `v0.2.0` passport release boundary.
 
 ### 4. System status: version summary
 
@@ -131,7 +124,7 @@ Optional enhancement. Add agent version breakdown to system status:
 }
 ```
 
-**Priority:** Low. Nice-to-have for ops page. Not blocking.
+**Status:** Deferred. Nice-to-have for ops page. Not part of `v0.2.0`.
 
 **Tests:**
 - [ ] System status includes class/mutation breakdowns when agents provide them.
@@ -146,18 +139,20 @@ Add tests that pin the new registration shape alongside existing contract tests.
 - [x] Passport-complete registration round-trip.
 - [x] Legacy registration (no new fields) still works.
 - [x] Agent list shape with mixed legacy + compliant agents.
-- [ ] Ack status values pinned.
+- [x] Passport registration validation pinned for `agent_class` / `mutation_class`.
+- [ ] Ack status values pinned separately.
 
 ### 6. Documentation updates
 
-- [ ] `BUS_HTTP_CONTRACT.md` — planned extensions section (done in draft).
-- [ ] `AGENT_CITIZENSHIP.md` — canonical JSON payload (done in draft).
+- [x] `BUS_HTTP_CONTRACT.md` — passport extensions documented.
+- [x] `AGENT_CITIZENSHIP.md` — canonical JSON payload documented.
+- [x] `README.md` — `v0.2.0` release boundary called out for downstream consumers.
 
-## Release plan
+## Release outcome
 
-Ship as a single pinakes release (recommend `v0.2.0` — new capabilities, no breaking changes).
+Shipped as `pinakes v0.2.0` — new capabilities, no breaking changes.
 
-Order within the release:
+Order within the shipped release:
 
 1. Agent struct + registration handler changes (items 1-2).
 2. Ack enumeration (item 3).
@@ -165,13 +160,9 @@ Order within the release:
 4. System status enhancement (item 4, can defer to next release).
 5. Doc updates (item 6).
 
-After release:
+Post-release reality:
 
 - downstream Go repos pin `github.com/joelkehle/pinakes` at `v0.2.0` or later
-- local/vendored copies of the passport client surface can be removed
-- the shared bus runtime should be upgraded to the same release line so registry reads (`GET /v1/agents`) expose the passport fields operationally
+- the shared bus runtime is deployed on the same release line, so registry reads (`GET /v1/agents`) expose the passport fields operationally
+- local/vendored copies of the passport client surface are no longer blocked on an unpublished upstream release
 - capability docs can proceed repo-by-repo; no big-bang migration required
-
----
-
-*Draft: Claude + Codex (architecture review, 2026-03-31)*

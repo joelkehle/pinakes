@@ -1,8 +1,8 @@
 ---
-summary: Human release checklist for pinakes tags and downstream passport rollout coordination.
+summary: Human release checklist for pinakes tags plus the settled v0.2.0 passport baseline note.
 read_when:
   - preparing a new pinakes tag
-  - publishing the first passport-capable release
+  - reviewing the v0.2.0 passport baseline
   - coordinating downstream repo upgrades after a pinakes release
 status: working draft
 ---
@@ -13,9 +13,10 @@ status: working draft
 
 Do not tag or release without explicit Joel approval.
 
-## v0.2.0 Purpose
+## v0.2.0 Baseline
 
 `v0.2.0` is the first passport-capable release line.
+It is already released, and the shared bus runtime is deployed on that line.
 
 It is the clean dependency boundary for downstream repos to consume:
 
@@ -39,7 +40,7 @@ It is the clean dependency boundary for downstream repos to consume:
 
 ## Tag And Publish
 
-From the `pinakes` repo:
+Historical command sequence for the `v0.2.0` baseline:
 
 ```bash
 git tag v0.2.0
@@ -55,6 +56,7 @@ This triggers the GHCR image build for:
 1. Confirm the GitHub release workflow succeeds.
 2. Confirm the image is published on the expected tag line.
 3. Confirm the shared bus runtime is deployed on the same release line before downstreams rely on the richer passport fields operationally.
+   - This is already true for `v0.2.0`.
 
 Migration nuance:
 
@@ -64,12 +66,12 @@ Migration nuance:
 
 ## Downstream Follow-On
 
-After `v0.2.0` is published and the shared bus runtime is deployed on that line:
+With `v0.2.0` published and the shared bus runtime deployed on that line:
 
-1. `email-triage`
+1. `ucla-tdg/ucla-tdg-email-triage`
    - pin `github.com/joelkehle/pinakes` to `v0.2.0+`
    - keep using `RegisterAgentWithPassport(...)`
-2. `tdg-ip-agents`
+2. `ucla-tdg/ucla-tdg-ip-agents`
    - pin `github.com/joelkehle/pinakes` to `v0.2.0+`
    - remove the local/vendored passport client workaround
 3. Continue Phase 5 with capability docs in both repos.
@@ -78,4 +80,4 @@ After `v0.2.0` is published and the shared bus runtime is deployed on that line:
 
 - rollback automation
 - downstream capability-doc authoring details
-- `email-agents` manager adoption
+- `jk/jk-email-agents` manager adoption

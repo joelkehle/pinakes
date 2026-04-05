@@ -58,7 +58,7 @@ Each agent repo documents its capabilities:
 
 These are delivery semantics contracts. The bus doesn't interpret them — it routes opaque messages. The contracts tell producers and consumers what's inside.
 
-Current agent repos: `tdg-ip-agents`, `email-agents`, `email-triage`.
+Current agent repos: `ucla-tdg/ucla-tdg-ip-agents`, `jk/jk-email-agents`, `ucla-tdg/ucla-tdg-email-triage`.
 
 ### Observability — shared contract, implemented everywhere
 
@@ -126,9 +126,9 @@ The moment the bus absorbs any of these, agent authors lose the freedom to build
 
 1. **Build the agent.** Any language, any framework. Implement the citizenship contract: passport fields, `/health`, `/metrics`, graceful shutdown, no silent message drops.
 2. **Document capabilities.** In your repo. Request/reply shapes, timeouts, idempotency, side effects, failure modes.
-3. **Get on the allowlist.** Add agent ID to `manager/ops/config/allowlist.txt`. Commit. Bus picks it up via hot-reload.
+3. **Get on the allowlist.** Add agent ID to `shared/manager/ops/config/allowlist.txt`. Commit. Bus picks it up via hot-reload.
 4. **Deploy.** Add agent to your stack's docker-compose. Connect to the `tta-agentnet` network. Agent registers with bus on first heartbeat.
-5. **Get monitored.** Add to `manager/ops/config/projects.json`. Set up dashboard inclusion and alerts with runbook links.
+5. **Get monitored.** Add to `shared/manager/ops/config/projects.json`. Set up dashboard inclusion and alerts with runbook links.
 
 Steps 1-4 get you on the bus. Step 5 makes you production-ready.
 
@@ -136,9 +136,9 @@ Steps 1-4 get you on the bus. Step 5 makes you production-ready.
 
 | Stack | Agents | Deploy mode | Citizenship status |
 |-------|--------|-------------|-------------------|
-| tdg-ip-agents | operator, disclosure-processor, patent-extractor, prior-art-extractor, market-extractor, patent-screen, prior-art-search, market-analysis | Image tag (GHCR) | Partial — no agent-level /health or /metrics yet. |
-| email-triage | triage-intake, triage-summarizer, triage-project-mapper, triage-action-extractor, triage-archive-watcher, triage-archive-learner | Local build | Partial — has buildinfo + /health, needs passport fields and graceful drain. |
-| email-agents | gmail-ingest, contacts-agent | Mixed | Partial. |
+| `ucla-tdg/ucla-tdg-ip-agents` | operator, disclosure-processor, patent-extractor, prior-art-extractor, market-extractor, patent-screen, prior-art-search, market-analysis | Image tag (GHCR) | Partial — no agent-level /health or /metrics yet. |
+| `ucla-tdg/ucla-tdg-email-triage` | triage-intake, triage-summarizer, triage-project-mapper, triage-action-extractor, triage-archive-watcher, triage-archive-learner | Local build | Partial — has buildinfo + /health; deploy-managed daemons now register passport fields, while graceful drain and broader citizenship rollout remain repo-local. |
+| `jk/jk-email-agents` | gmail-ingest, contacts-agent | Mixed | Partial. |
 
 Migration path: adopt citizenship incrementally. Add passport fields to registration, add /health and /metrics, add graceful shutdown. No big-bang rewrite.
 

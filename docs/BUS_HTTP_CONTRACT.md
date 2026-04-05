@@ -14,10 +14,10 @@ Purpose: preserve the extracted bus surface in `pinakes`.
 
 This doc describes the extracted bus contract as implemented by:
 
-- [main.go](/home/joelkehle/Projects/pinakes/cmd/pinakes/main.go)
-- [server.go](/home/joelkehle/Projects/pinakes/pkg/httpapi/server.go)
-- [store.go](/home/joelkehle/Projects/pinakes/pkg/bus/store.go)
-- [contract_test.go](/home/joelkehle/Projects/pinakes/pkg/httpapi/contract_test.go)
+- [main.go](/home/joelkehle/Projects/shared/pinakes/cmd/pinakes/main.go)
+- [server.go](/home/joelkehle/Projects/shared/pinakes/pkg/httpapi/server.go)
+- [store.go](/home/joelkehle/Projects/shared/pinakes/pkg/bus/store.go)
+- [contract_test.go](/home/joelkehle/Projects/shared/pinakes/pkg/httpapi/contract_test.go)
 
 ## Freeze Checklist
 
@@ -74,13 +74,12 @@ This doc describes the extracted bus contract as implemented by:
   - body: `agent_id`, `message_id`, `status`, `reason`
   - auth: `X-Bus-Signature` over raw JSON body using target agent secret
   - response: `ok`
-  - canonical `status` values:
-    - `processed` — message handled successfully
-    - `rejected` — message refused (unsupported type, validation failure, not intended for this agent)
-    - `error` — processing attempted but failed (internal error, dependency unavailable)
-  - migration policy: the bus currently accepts any string in `status`. Unknown values are accepted with a warning log to avoid breaking existing agents. New agents SHOULD use only the canonical values above.
-  - `reason`: SHOULD be provided when `status` is `rejected` or `error`. Missing reason is accepted with a warning log, not rejected.
-  - sender expectations: senders SHOULD NOT blindly retry on `rejected`. Senders MAY retry on `error` with backoff. Silent drops (no ack at all) violate the agent citizenship contract.
+  - current `status` values:
+    - `accepted` — target agent accepted the request and moved it into execution
+    - `rejected` — target agent refused the request
+  - the current bus implementation rejects other `status` values with validation error
+  - `reason` is accepted as optional opaque text; the current bus does not validate or surface it
+  - sender expectations: senders SHOULD NOT blindly retry on `rejected`. Silent drops (no ack at all) violate the agent citizenship contract.
 - `POST /v1/events`
   - source: `handleEvents`
   - body: `message_id`, `type`, `body`, `meta`
@@ -190,7 +189,7 @@ This doc describes the extracted bus contract as implemented by:
 
 ## Runtime Defaults
 
-These values are currently hard-coded in [main.go](/home/joelkehle/Projects/pinakes/cmd/pinakes/main.go) and mirrored as fallback defaults in [store.go](/home/joelkehle/Projects/pinakes/pkg/bus/store.go).
+These values are currently hard-coded in [main.go](/home/joelkehle/Projects/shared/pinakes/cmd/pinakes/main.go) and mirrored as fallback defaults in [store.go](/home/joelkehle/Projects/shared/pinakes/pkg/bus/store.go).
 
 - `GracePeriod = 30s`
 - `ProgressMinInterval = 2s`
@@ -211,7 +210,7 @@ Important current behavior:
 
 ## Passport Extensions
 
-The following additive fields are implemented to support the agent citizenship contract (`AGENT_CITIZENSHIP.md`). Existing callers still work without them.
+The following additive fields shipped in `pinakes v0.2.0` to support the agent citizenship contract (`AGENT_CITIZENSHIP.md`). Existing callers still work without them.
 
 ### Registration extensions
 
@@ -225,7 +224,7 @@ New fields on `POST /v1/agents/register`:
 | `build` | no | object | `{ "commit": string, "dirty": bool }` |
 | `meta` | no | object | `{ "owner": string, "repo": string, "health_url": string, "dependencies": [string] }` |
 
-*Required by citizenship contract. Bus accepts registration without them during migration. See `AGENT_CITIZENSHIP.md` for semantics.
+*Required by citizenship contract. The `v0.2.0+` bus line still accepts legacy registration for backward compatibility with pre-passport callers. See `AGENT_CITIZENSHIP.md` for semantics.
 
 ### Response extensions
 
@@ -234,6 +233,7 @@ New fields on `POST /v1/agents/register`:
 
 ### Compatibility
 
+- `pinakes v0.2.0` is the passport-capable baseline for downstream adoption.
 - Existing agents that register without new fields continue to work. No breaking change.
 - New fields are additive to the registration payload and response shapes.
 - The bus stores and echoes new fields but does not enforce their semantics beyond enum validation for `agent_class` and `mutation_class`.
@@ -249,6 +249,6 @@ New fields on `POST /v1/agents/register`:
 
 ## Contract Owners
 
-- canonical protocol contract tests live in [contract_test.go](/home/joelkehle/Projects/pinakes/pkg/httpapi/contract_test.go)
+- canonical protocol contract tests live in [contract_test.go](/home/joelkehle/Projects/shared/pinakes/pkg/httpapi/contract_test.go)
 - this repo is now the upstream home for those tests
 - product-level integration tests should stay outside the canonical protocol suite

@@ -2,7 +2,7 @@
 
 ## Handoff
 
-- Ball with: Codex (in pinakes repo)
+- Ball with: Codex (in `shared/pinakes`)
 - Blocking question: none (Codex review findings addressed below)
 - Next action: implement fix 1 (hot-reloadable allowlist)
 
@@ -49,7 +49,7 @@ triage-intake
 # ...
 ```
 
-**Allowlist file location:** Source of truth lives in `~/Projects/manager/ops/config/allowlist.txt`, git-tracked alongside other ops config. Bind-mounted into the bus container. NOT in a Docker volume.
+**Allowlist file location:** Source of truth lives in `~/Projects/shared/manager/ops/config/allowlist.txt`, git-tracked alongside other ops config. Bind-mounted into the bus container. NOT in a Docker volume.
 
 **Changes:**
 - `pkg/httpapi/server.go` — add `loadAllowlistFile()`, `watchAllowlistFile()` methods
@@ -63,12 +63,12 @@ triage-intake
 bus:
   volumes:
     - bus-data:/data
-    - /home/joelkehle/Projects/manager/ops/config/allowlist.txt:/etc/pinakes/allowlist.txt:ro
+    - /home/joelkehle/Projects/shared/manager/ops/config/allowlist.txt:/etc/pinakes/allowlist.txt:ro
   environment:
     - ALLOWLIST_FILE=/etc/pinakes/allowlist.txt
 ```
 
-To add an agent: edit `allowlist.txt` in `~/Projects/manager`, commit, bus picks it up automatically. No restart.
+To add an agent: edit `allowlist.txt` in `~/Projects/shared/manager`, commit, bus picks it up automatically. No restart.
 
 **Tests:**
 - Unit test: startup with valid file — allowset populated correctly
@@ -86,13 +86,13 @@ To add an agent: edit `allowlist.txt` in `~/Projects/manager`, commit, bus picks
 
 **Goal:** Decoupling the bus lifecycle from any agent stack so agent deploys never risk bouncing the bus.
 
-**Current state:** Bus is defined in `tdg-ip-agents/deploy/docker-compose.yml` alongside 7 IP agents. Three stacks (tdg-ip-agents, email-agents, email-triage) all depend on this bus container.
+**Current state:** Bus is defined in `ucla-tdg/ucla-tdg-ip-agents/deploy/docker-compose.yml` alongside 7 IP agents. Three stacks (`ucla-tdg/ucla-tdg-ip-agents`, `jk/jk-email-agents`, `ucla-tdg/ucla-tdg-email-triage`) all depend on this bus container.
 
 **Prerequisite:** Fix 3 (Compose v2) should land first or simultaneously. This is compose-stack surgery — do it on v2, not v1.
 
 **Implementation:**
 
-1. Create `~/Projects/pinakes/deploy/docker-compose.yml` — bus-only stack:
+1. Create `~/Projects/shared/pinakes/deploy/docker-compose.yml` — bus-only stack:
 
 ```yaml
 services:
@@ -102,7 +102,7 @@ services:
       - "${BUS_PORT:-8080}:8080"
     volumes:
       - bus-data:/data
-      - /home/joelkehle/Projects/manager/ops/config/allowlist.txt:/etc/pinakes/allowlist.txt:ro
+      - /home/joelkehle/Projects/shared/manager/ops/config/allowlist.txt:/etc/pinakes/allowlist.txt:ro
     environment:
       - ALLOWLIST_FILE=/etc/pinakes/allowlist.txt
     healthcheck:
@@ -126,7 +126,7 @@ networks:
 
 **Volume migration:** The existing bus-data volume is named `deploy_bus-data` (compose prefixes project name). The new stack must reference it as external with the same name to reuse existing state. Do NOT create a new volume — that would fork bus state.
 
-2. Remove `bus` service from `tdg-ip-agents/deploy/docker-compose.yml`. Remove `depends_on: bus` from all agents. Drop `network_mode` — use external network only:
+2. Remove `bus` service from `ucla-tdg/ucla-tdg-ip-agents/deploy/docker-compose.yml`. Remove `depends_on: bus` from all agents. Drop `network_mode` - use external network only:
 
 3. Update all three consumer stacks to declare the network as external:
 
@@ -137,19 +137,19 @@ networks:
     name: ${STACK_NETWORK_NAME:-tta-agentnet}
 ```
 
-4. Update `deploy/.env.example` in all three repos to remove bus config (it lives in pinakes/deploy now).
+4. Update `deploy/.env.example` in all three repos to remove bus config (it lives in `shared/pinakes/deploy` now).
 
 **Agent retry behavior:** Before implementing, confirm that all three agent repos retry registration on bus unavailability. Check:
-- `tdg-ip-agents` — operator bridge heartbeat loop (`internal/operator/bridge.go`)
-- `email-agents` — agent main loops
-- `email-triage` — triage-intake and adapter main loops
+- `ucla-tdg/ucla-tdg-ip-agents` - operator bridge heartbeat loop (`internal/operator/bridge.go`)
+- `jk/jk-email-agents` - agent main loops
+- `ucla-tdg/ucla-tdg-email-triage` - triage-intake and adapter main loops
 
 All should already retry via heartbeat (60s interval), but verify before removing `depends_on`.
 
 **Deploy order:** Bus stack first, then agent stacks in any order.
 
 **Verify:**
-- Stop and restart tdg-ip-agents agents without touching the bus
+- Stop and restart `ucla-tdg/ucla-tdg-ip-agents` agents without touching the bus
 - Bus stays up, all agents from other stacks stay registered
 - New agent deploys in any stack don't affect the bus
 
@@ -174,12 +174,12 @@ sudo apt-get update && sudo apt-get install docker-compose-plugin
 2. Update all documentation and scripts that reference `docker-compose` to use `docker compose` (space, not hyphen).
 
 3. Files to update:
-   - `tdg-ip-agents/deploy/.env.example`
-   - `tdg-ip-agents/AGENTS.md`
-   - `tdg-ip-agents/README.md`
-   - `email-agents/README.md`
-   - `email-triage/README.md`
-   - `email-triage/docker-compose.yml`
+   - `ucla-tdg/ucla-tdg-ip-agents/deploy/.env.example`
+   - `ucla-tdg/ucla-tdg-ip-agents/AGENTS.md`
+   - `ucla-tdg/ucla-tdg-ip-agents/README.md`
+   - `jk/jk-email-agents/README.md`
+   - `ucla-tdg/ucla-tdg-email-triage/README.md`
+   - `ucla-tdg/ucla-tdg-email-triage/docker-compose.yml`
 
 4. Do NOT move or alias the old `docker-compose` binary until all host automation (cron, systemd, scripts) has been audited. Just stop using it in docs and manual operations.
 
