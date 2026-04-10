@@ -51,8 +51,8 @@ One JSON shape. Required fields are top-level. Optional build metadata nests und
     "dirty": false
   },
   "meta": {
-    "owner": "email-triage",
-    "repo": "github.com/joelkehle/email-triage",
+    "owner": "ucla-tdg-email-triage",
+    "repo": "github.com/joelkehle/ucla-tdg-email-triage",
     "health_url": "http://triage-intake:8101/health",
     "dependencies": ["anthropic-api", "gmail-api"]
   }

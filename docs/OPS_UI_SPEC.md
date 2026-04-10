@@ -107,7 +107,7 @@ Response:
   "agents": [
     {
       "agent_id": "triage-summarizer",
-      "project_id": "email-triage"
+      "project_id": "ucla-tdg-email-triage"
     }
   ],
   "capabilities": [
@@ -118,7 +118,7 @@ Response:
   ],
   "projects": [
     {
-      "project_id": "email-triage",
+      "project_id": "ucla-tdg-email-triage",
       "name": "Email Triage"
     }
   ]
@@ -190,7 +190,7 @@ Response:
   },
   "projects": [
     {
-      "project_id": "email-triage",
+      "project_id": "ucla-tdg-email-triage",
       "name": "Email Triage",
       "registered": 6,
       "expected": 6,
@@ -273,7 +273,7 @@ Response:
   "items": [
     {
       "agent_id": "triage-summarizer",
-      "project_id": "email-triage",
+      "project_id": "ucla-tdg-email-triage",
       "registered": true,
       "expected": true,
       "status": "ready",
@@ -281,8 +281,8 @@ Response:
       "agent_class": "worker",
       "mutation_class": "observe",
       "capabilities": ["triage-summarizer"],
-      "owner": "email-triage",
-      "repo": "github.com/joelkehle/email-triage",
+      "owner": "ucla-tdg-email-triage",
+      "repo": "github.com/joelkehle/ucla-tdg-email-triage",
       "health_url": "http://triage-summarizer:8212/health",
       "last_seen_at": "2026-03-31T18:12:03Z"
     }
@@ -339,7 +339,7 @@ Response:
 {
   "agent": {
     "agent_id": "triage-summarizer",
-    "project_id": "email-triage",
+    "project_id": "ucla-tdg-email-triage",
     "expected": true,
     "registered": true,
     "passport": {
@@ -353,8 +353,8 @@ Response:
         "dirty": false
       },
       "meta": {
-        "owner": "email-triage",
-        "repo": "github.com/joelkehle/email-triage",
+        "owner": "ucla-tdg-email-triage",
+        "repo": "github.com/joelkehle/ucla-tdg-email-triage",
         "health_url": "http://triage-summarizer:8212/health",
         "dependencies": ["triage-claude-builder", "triage-codex-builder"]
       }
@@ -428,7 +428,7 @@ Response:
   "items": [
     {
       "name": "triage-summarizer",
-      "project_id": "email-triage",
+      "project_id": "ucla-tdg-email-triage",
       "producer_agents": ["triage-summarizer"],
       "mutation_class": "observe",
       "summary": "Summarizes inbound email thread packs",
@@ -474,7 +474,7 @@ Response:
 ```json
 {
   "name": "triage-summarizer",
-  "project_id": "email-triage",
+  "project_id": "ucla-tdg-email-triage",
   "producer_agents": ["triage-summarizer"],
   "summary": "Consumes SummarizerRequest and emits thread summary output.",
   "request_shape": {
@@ -498,7 +498,7 @@ Response:
     "timeout in downstream model call"
   ],
   "source_doc": {
-    "repo": "email-triage",
+    "repo": "ucla-tdg-email-triage",
     "path": "docs/capabilities/triage-summarizer.md"
   }
 }
@@ -707,7 +707,7 @@ Response:
 {
   "items": [
     {
-      "project_id": "email-triage",
+      "project_id": "ucla-tdg-email-triage",
       "name": "Email Triage",
       "expected_agents": 6,
       "registered_agents": 6,
@@ -755,7 +755,7 @@ Response:
 ```json
 {
   "project": {
-    "project_id": "email-triage",
+    "project_id": "ucla-tdg-email-triage",
     "name": "Email Triage"
   },
   "services": [
@@ -811,12 +811,12 @@ Response:
 ```json
 {
   "nodes": [
-    { "id": "email-triage", "type": "project" },
+    { "id": "ucla-tdg-email-triage", "type": "project" },
     { "id": "triage-summarizer", "type": "agent", "mutation_class": "observe" },
     { "id": "triage-summarizer-cap", "type": "capability" }
   ],
   "edges": [
-    { "from": "email-triage", "to": "triage-summarizer", "type": "contains" },
+    { "from": "ucla-tdg-email-triage", "to": "triage-summarizer", "type": "contains" },
     { "from": "triage-summarizer", "to": "triage-summarizer-cap", "type": "advertises" }
   ]
 }
