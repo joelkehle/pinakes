@@ -54,10 +54,12 @@ func TestSQLitePersistAfterSendIsAtomic(t *testing.T) {
 		t.Fatalf("expected injected error, got %v", err)
 	}
 
-	// In-memory state did advance (counter, message map) — that is the
-	// SendMessage contract. The atomic guarantee is only about what makes
-	// it to disk. So drop the hook and verify the next send succeeds and
-	// gets the next sequential id without a gap from the rollback.
+	// In-memory state did advance for the failed send (counter, message
+	// map) — that is the SendMessage contract. The atomic guarantee is
+	// only about what makes it to disk. So drop the hook and verify the
+	// next send succeeds at m-000002: the in-memory counter advanced
+	// through the rolled-back attempt, so on disk we will see m-000002
+	// with no m-000001 row — that gap is the rollback working correctly.
 	s1.testHookBeforeCommit = nil
 	good, _, err := s1.SendMessage(SendMessageInput{
 		To: "b", From: "a", RequestID: "rid-good", Type: MessageTypeRequest, Body: "should persist",
