@@ -202,6 +202,7 @@ These values are currently hard-coded in [main.go](/home/joelkehle/Projects/shar
 - `PushBaseBackoff = 500ms`
 - `MaxInboxEventsPerAgent = 10000`
 - `MaxObserveEvents = 50000`
+- `SweepMinInterval = 250ms` — minimum gap between full sweep passes. The bus skips redundant sweeps inside this window so long-poll cycles do not re-walk hundreds of thousands of retained messages on every wake. The first sweep after process start always runs; agent expiry, TTL expiry, and ack-timeout transitions land within one `SweepMinInterval` of their deadline.
 
 Important current behavior:
 

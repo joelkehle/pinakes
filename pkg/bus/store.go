@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,7 +37,12 @@ type Config struct {
 	PushBaseBackoff        time.Duration
 	MaxInboxEventsPerAgent int
 	MaxObserveEvents       int
-	Clock                  func() time.Time
+	// SweepMinInterval bounds how often the expensive full-state sweep runs.
+	// Successive sweep calls inside this window are skipped, so idle hot paths
+	// (PollInbox / ObserveSince / Health / Metrics) stay cheap on stores
+	// holding hundreds of thousands of retained messages. Defaults to 250ms.
+	SweepMinInterval time.Duration
+	Clock            func() time.Time
 }
 
 type idempotencyEntry struct {
@@ -62,6 +68,23 @@ type Store struct {
 	inboxBase            map[string]int
 	observeEvents        []ObserveEvent
 	idempotency          map[string]idempotencyEntry
+
+	lastSweepAt time.Time
+
+	// inboxNotify holds a per-agent broadcast channel that the inbox waiters
+	// receive on. The channel is closed (and replaced) whenever new state
+	// lands in that agent's inbox, waking any in-flight long-poller without
+	// the previous 100ms sleep loop.
+	inboxNotify map[string]chan struct{}
+	// observeNotify is the global broadcast channel for observe waiters;
+	// closed (and replaced) whenever a new observe event is published.
+	observeNotify chan struct{}
+
+	// sweepSkipped counts sweep invocations that returned early due to
+	// SweepMinInterval. Used by tests/benchmarks to assert idle CPU savings.
+	sweepSkipped atomic.Uint64
+	// sweepRan counts sweep invocations that executed the full body.
+	sweepRan atomic.Uint64
 
 	humanAllowlist map[string]struct{}
 	httpClient     *http.Client
@@ -104,6 +127,12 @@ func NewStore(cfg Config) *Store {
 	if cfg.MaxObserveEvents <= 0 {
 		cfg.MaxObserveEvents = 50000
 	}
+	if cfg.SweepMinInterval < 0 {
+		cfg.SweepMinInterval = 0
+	}
+	if cfg.SweepMinInterval == 0 {
+		cfg.SweepMinInterval = 250 * time.Millisecond
+	}
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now
 	}
@@ -126,6 +155,8 @@ func NewStore(cfg Config) *Store {
 		inboxBase:            map[string]int{},
 		observeEvents:        []ObserveEvent{},
 		idempotency:          map[string]idempotencyEntry{},
+		inboxNotify:          map[string]chan struct{}{},
+		observeNotify:        make(chan struct{}),
 		humanAllowlist:       allowlist,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -195,6 +226,34 @@ func (s *Store) appendInboxLocked(agentID string, evt InboxEvent) {
 		s.inboxes[agentID] = append([]InboxEvent{}, s.inboxes[agentID][drop:]...)
 		s.inboxBase[agentID] += drop
 	}
+	s.signalInboxLocked(agentID)
+}
+
+// inboxNotifyChanLocked returns the broadcast channel for an agent inbox.
+// Callers hold s.mu and read the returned channel after releasing it.
+func (s *Store) inboxNotifyChanLocked(agentID string) chan struct{} {
+	ch, ok := s.inboxNotify[agentID]
+	if !ok || ch == nil {
+		ch = make(chan struct{})
+		s.inboxNotify[agentID] = ch
+	}
+	return ch
+}
+
+// signalInboxLocked wakes inbox waiters by closing the broadcast channel
+// (if any) and clearing the slot so future waiters allocate a fresh one.
+func (s *Store) signalInboxLocked(agentID string) {
+	if ch, ok := s.inboxNotify[agentID]; ok && ch != nil {
+		close(ch)
+		delete(s.inboxNotify, agentID)
+	}
+}
+
+// signalObserveLocked wakes observe waiters by closing the current channel
+// and installing a new one. Always non-nil so waiters can read it safely.
+func (s *Store) signalObserveLocked() {
+	close(s.observeNotify)
+	s.observeNotify = make(chan struct{})
 }
 
 func (s *Store) trimObserveLocked() {
@@ -257,6 +316,7 @@ func (s *Store) publishLocked(eventType EventType, data any, conversationID stri
 		AgentIDs:       agentIDs,
 	})
 	s.trimObserveLocked()
+	s.signalObserveLocked()
 }
 
 func (s *Store) ensureConversationLocked(input CreateConversationInput, now time.Time) *Conversation {
@@ -282,6 +342,17 @@ func (s *Store) ensureConversationLocked(input CreateConversationInput, now time
 }
 
 func (s *Store) sweepLocked(now time.Time) {
+	// Rate-limit the expensive full state walk. The bus reaches near-100% CPU
+	// once `messages` holds hundreds of thousands of entries because every API
+	// call (and every 100ms long-poll tick) used to scan them all. The first
+	// sweep after process start still runs because lastSweepAt is zero.
+	if s.cfg.SweepMinInterval > 0 && !s.lastSweepAt.IsZero() && now.Sub(s.lastSweepAt) < s.cfg.SweepMinInterval {
+		s.sweepSkipped.Add(1)
+		return
+	}
+	s.lastSweepAt = now
+	s.sweepRan.Add(1)
+
 	for k, v := range s.idempotency {
 		if now.Sub(v.CreatedAt) > s.cfg.IdempotencyWindow {
 			delete(s.idempotency, k)
@@ -751,12 +822,26 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 			s.mu.Unlock()
 			return out, next, nil
 		}
-		s.mu.Unlock()
 
-		if wait == 0 || s.now().After(deadline) {
+		if wait == 0 {
+			s.mu.Unlock()
 			return []InboxEvent{}, cursor, nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		remaining := deadline.Sub(s.now())
+		if remaining <= 0 {
+			s.mu.Unlock()
+			return []InboxEvent{}, cursor, nil
+		}
+		notifier := s.inboxNotifyChanLocked(agentID)
+		s.mu.Unlock()
+
+		timer := time.NewTimer(remaining)
+		select {
+		case <-notifier:
+			timer.Stop()
+		case <-timer.C:
+			return []InboxEvent{}, cursor, nil
+		}
 	}
 }
 
@@ -1126,24 +1211,45 @@ func (s *Store) ObserveSince(afterID int64, filter ObserveFilter, wait time.Dura
 		now := s.now()
 		s.mu.Lock()
 		s.sweepLocked(now)
+		// observeEvents are appended in monotonically increasing ID order,
+		// so we can binary-search for the first event past afterID instead
+		// of scanning all 50k retained entries per call.
+		idx := sort.Search(len(s.observeEvents), func(i int) bool {
+			return s.observeEvents[i].ID > afterID
+		})
 		out := []ObserveEvent{}
 		last := afterID
-		for _, evt := range s.observeEvents {
-			if evt.ID <= afterID {
-				continue
-			}
+		for _, evt := range s.observeEvents[idx:] {
 			if !eventMatchesFilter(evt, filter) {
 				continue
 			}
 			out = append(out, evt)
 			last = evt.ID
 		}
-		s.mu.Unlock()
 
-		if len(out) > 0 || wait == 0 || s.now().After(deadline) {
+		if len(out) > 0 {
+			s.mu.Unlock()
 			return out, last
 		}
-		time.Sleep(100 * time.Millisecond)
+		if wait == 0 {
+			s.mu.Unlock()
+			return out, last
+		}
+		remaining := deadline.Sub(s.now())
+		if remaining <= 0 {
+			s.mu.Unlock()
+			return out, last
+		}
+		notifier := s.observeNotify
+		s.mu.Unlock()
+
+		timer := time.NewTimer(remaining)
+		select {
+		case <-notifier:
+			timer.Stop()
+		case <-timer.C:
+			return []ObserveEvent{}, last
+		}
 	}
 }
 
