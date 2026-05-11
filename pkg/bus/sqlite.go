@@ -21,6 +21,12 @@ type SQLiteStore struct {
 	inner *Store
 	db    *sqlx.DB
 	mu    sync.Mutex
+
+	// testHookBeforeCommit, if non-nil, is invoked inside persistAfterSend
+	// and CreateConversation's transaction right before Commit. Returning a
+	// non-nil error forces a rollback so tests can prove all-or-nothing
+	// semantics. Production callers never set this.
+	testHookBeforeCommit func() error
 }
 
 const sqliteSchema = `
@@ -356,8 +362,15 @@ func nullableJSON(v any) sql.NullString {
 	return sql.NullString{String: string(b), Valid: true}
 }
 
-func (s *SQLiteStore) saveAgent(a *Agent) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO agents (agent_id, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds)
+// sqliteExec abstracts over *sqlx.DB and *sqlx.Tx so that the save* helpers
+// can write either directly (auto-commit) or inside a multi-statement
+// transaction.
+type sqliteExec interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func saveAgentTo(exec sqliteExec, a *Agent) error {
+	_, err := exec.Exec(`INSERT OR REPLACE INTO agents (agent_id, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.AgentID,
 		marshalJSON(a.Capabilities),
@@ -377,8 +390,12 @@ func (s *SQLiteStore) saveAgent(a *Agent) error {
 	return err
 }
 
-func (s *SQLiteStore) saveConversation(c *Conversation) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO conversations (conversation_id, title, participants, status, message_count, created_at, last_message_at, meta)
+func (s *SQLiteStore) saveAgent(a *Agent) error {
+	return saveAgentTo(s.db, a)
+}
+
+func saveConversationTo(exec sqliteExec, c *Conversation) error {
+	_, err := exec.Exec(`INSERT OR REPLACE INTO conversations (conversation_id, title, participants, status, message_count, created_at, last_message_at, meta)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ConversationID,
 		c.Title,
@@ -392,8 +409,12 @@ func (s *SQLiteStore) saveConversation(c *Conversation) error {
 	return err
 }
 
-func (s *SQLiteStore) saveMessage(m *Message) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO messages (message_id, type, from_agent, to_agent, conversation_id,
+func (s *SQLiteStore) saveConversation(c *Conversation) error {
+	return saveConversationTo(s.db, c)
+}
+
+func saveMessageTo(exec sqliteExec, m *Message) error {
+	_, err := exec.Exec(`INSERT OR REPLACE INTO messages (message_id, type, from_agent, to_agent, conversation_id,
 		request_id, in_reply_to, body, meta, attachments, state,
 		created_at, delivered_at, last_progress_at, ttl_expires_at, grace_until, queued_for_agent)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -418,6 +439,10 @@ func (s *SQLiteStore) saveMessage(m *Message) error {
 	return err
 }
 
+func (s *SQLiteStore) saveMessage(m *Message) error {
+	return saveMessageTo(s.db, m)
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1
@@ -425,9 +450,15 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-func (s *SQLiteStore) saveConversationMessage(cid, mid string, position int) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO conversation_messages (conversation_id, message_id, position) VALUES (?, ?, ?)`,
+func saveConversationMessageTo(exec sqliteExec, cid, mid string, position int) error {
+	_, err := exec.Exec(`INSERT OR REPLACE INTO conversation_messages (conversation_id, message_id, position) VALUES (?, ?, ?)`,
 		cid, mid, position)
+	return err
+}
+
+func saveCountersTo(exec sqliteExec, nextConv, nextMsg int64) error {
+	_, err := exec.Exec(`INSERT OR REPLACE INTO counters (key, value) VALUES ('next_conversation_id', ?), ('next_message_id', ?)`,
+		nextConv, nextMsg)
 	return err
 }
 
@@ -436,35 +467,67 @@ func (s *SQLiteStore) saveCounters() error {
 	nextConv := s.inner.nextConversationID
 	nextMsg := s.inner.nextMessageID
 	s.inner.mu.Unlock()
-
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO counters (key, value) VALUES ('next_conversation_id', ?), ('next_message_id', ?)`,
-		nextConv, nextMsg)
-	return err
+	return saveCountersTo(s.db, nextConv, nextMsg)
 }
 
-// persistAfterSend persists new message, conversation, and counters after SendMessage.
+// persistAfterSend persists the message row, its parent conversation, the
+// conversation_messages position link, and the counter advance from a single
+// SendMessage call. All four writes go through one SQL transaction so that a
+// crash mid-persist cannot leave a counter advanced past an unwritten row, a
+// message without its conversation, or a conversation without its position
+// link. Pre-v0.2.2 these were four separate auto-commit Execs, which produced
+// the conversation-count drift observed on bus bounce.
 func (s *SQLiteStore) persistAfterSend(m *Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.inner.mu.Lock()
-	conv := s.inner.conversations[m.ConversationID]
+	var convCopy *Conversation
+	if c := s.inner.conversations[m.ConversationID]; c != nil {
+		cp := *c
+		convCopy = &cp
+	}
 	convMsgs := s.inner.conversationMessages[m.ConversationID]
+	nextConv := s.inner.nextConversationID
+	nextMsg := s.inner.nextMessageID
 	s.inner.mu.Unlock()
 
-	if conv != nil {
-		if err := s.saveConversation(conv); err != nil {
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if convCopy != nil {
+		if err := saveConversationTo(tx, convCopy); err != nil {
 			return err
 		}
 	}
-	if err := s.saveMessage(m); err != nil {
+	if err := saveMessageTo(tx, m); err != nil {
 		return err
 	}
 	position := len(convMsgs) - 1
-	if err := s.saveConversationMessage(m.ConversationID, m.MessageID, position); err != nil {
+	if err := saveConversationMessageTo(tx, m.ConversationID, m.MessageID, position); err != nil {
 		return err
 	}
-	return s.saveCounters()
+	if err := saveCountersTo(tx, nextConv, nextMsg); err != nil {
+		return err
+	}
+	if hook := s.testHookBeforeCommit; hook != nil {
+		if err := hook(); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // persistMessageState saves just the message row (state change after ack/event).
@@ -510,12 +573,38 @@ func (s *SQLiteStore) CreateConversation(input CreateConversationInput) (*Conver
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if perr := s.saveConversation(out); perr != nil {
+
+	s.inner.mu.Lock()
+	nextConv := s.inner.nextConversationID
+	nextMsg := s.inner.nextMessageID
+	s.inner.mu.Unlock()
+
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if perr := saveConversationTo(tx, out); perr != nil {
 		return nil, perr
 	}
-	if perr := s.saveCounters(); perr != nil {
+	if perr := saveCountersTo(tx, nextConv, nextMsg); perr != nil {
 		return nil, perr
 	}
+	if hook := s.testHookBeforeCommit; hook != nil {
+		if err := hook(); err != nil {
+			return nil, err
+		}
+	}
+	if cerr := tx.Commit(); cerr != nil {
+		return nil, cerr
+	}
+	committed = true
 	return out, nil
 }
 
