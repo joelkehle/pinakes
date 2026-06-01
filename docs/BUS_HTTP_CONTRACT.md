@@ -221,11 +221,13 @@ New fields on `POST /v1/agents/register`:
 |-------|----------|------|---------|
 | `version` | yes* | string | Agent version (semver or commit-based). |
 | `agent_class` | yes* | string | `worker` or `orchestrator`. |
-| `mutation_class` | yes* | string | `observe`, `recommend`, or `mutate`. |
+| `mutation_class` | yes* | string | Legacy wire field for safety class. Human-facing tools should render it as `read`, `propose`, or `write`. |
 | `build` | no | object | `{ "commit": string, "dirty": bool }` |
 | `meta` | no | object | `{ "owner": string, "repo": string, "health_url": string, "dependencies": [string] }` |
 
 *Required by citizenship contract. The `v0.2.0+` bus line still accepts legacy registration for backward compatibility with pre-passport callers. See `AGENT_CITIZENSHIP.md` for semantics.
+
+Safety-class display mapping: `observe` -> `read`, `recommend` -> `propose`, `mutate` -> `write`.
 
 ### Response extensions
 
@@ -237,7 +239,7 @@ New fields on `POST /v1/agents/register`:
 - `pinakes v0.2.0` is the passport-capable baseline for downstream adoption.
 - Existing agents that register without new fields continue to work. No breaking change.
 - New fields are additive to the registration payload and response shapes.
-- The bus stores and echoes new fields but does not enforce their semantics beyond enum validation for `agent_class` and `mutation_class`.
+- The bus stores and echoes new fields but does not enforce their semantics beyond enum validation for `agent_class` and the legacy safety-class wire field.
 
 ### `meta.health_url` operational convention
 

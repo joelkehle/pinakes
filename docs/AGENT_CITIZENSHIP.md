@@ -69,7 +69,7 @@ One JSON shape. Required fields are top-level. Optional build metadata nests und
 | `description` | string | Human-readable one-liner: what this agent does. |
 | `capabilities` | []string | Message types this agent handles. Flat strings (e.g. `prior-art-search`, `email-triage`). |
 | `agent_class` | string | `worker` or `orchestrator`. |
-| `mutation_class` | string | `observe`, `recommend`, or `mutate`. |
+| `mutation_class` | string | Legacy wire field for safety class. Values map to `read`, `propose`, or `write` in human-facing text. |
 | `mode` | string | Transport: `pull` (polls inbox) or `push` (receives callbacks). |
 | `callback_url` | string | Required if `mode` is `push`. Null otherwise. |
 
@@ -93,19 +93,21 @@ One JSON shape. Required fields are top-level. Optional build metadata nests und
 
 This is separate from `mode`, which is transport. A worker can use push or pull. An orchestrator can use push or pull. Don't conflate role with delivery mechanism.
 
-**`mutation_class`** declares the agent's side-effect boundary:
+**Safety class** declares the agent's side-effect boundary. Human-facing docs and UI should use `read`, `propose`, and `write`:
 
-- `observe` — reads, classifies, summarizes, enriches. No external mutation. Safe to run speculatively.
-- `recommend` — proposes actions or artifacts for human or downstream approval. Does not act autonomously.
-- `mutate` — can change external state or trigger irreversible side effects (send emails, modify records, call external APIs with write semantics).
+- `read` — reads, classifies, summarizes, enriches. No external writes. Safe to run speculatively.
+- `propose` — proposes actions or artifacts for human or downstream approval. Does not act autonomously.
+- `write` — can change external state or trigger irreversible side effects, such as sending emails, modifying records, or calling external APIs with write semantics.
+
+The current passport wire field is still `mutation_class` for compatibility with deployed agents. Treat `observe` as `read`, `recommend` as `propose`, and `mutate` as `write` whenever displaying or explaining agent capability.
 
 This gives you:
 
 - **Safer ops page.** Humans see at a glance which agents can change real systems.
-- **Safer promotion rules.** `mutate` agents may require stricter verification before promotion.
-- **Future policy hooks.** Governance rules can key off mutation class without overbuilding now.
+- **Safer promotion rules.** Write-capable agents may require stricter verification before promotion.
+- **Future policy hooks.** Governance rules can key off safety class without overbuilding now.
 
-The bus does not enforce mutation_class semantics — it's a declaration, not a sandbox. Enforcement is through review, policy, and ops tooling in manager.
+The bus does not enforce safety-class semantics — it's a declaration, not a sandbox. Enforcement is through review, policy, and ops tooling in manager.
 
 **`capabilities`** use flat, stable strings. Existing agents already use names like `prior-art-search`, `patent-screen`, `email-triage`. Don't rename them. If taxonomy becomes useful later, add optional metadata — don't change routing keys.
 

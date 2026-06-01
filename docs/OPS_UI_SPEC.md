@@ -143,7 +143,7 @@ Components:
 - fleet state cards
 - project summary table
 - recent activity panel
-- mutation-risk panel
+- write-risk panel
 
 Hero status strip fields:
 
@@ -183,10 +183,10 @@ Response:
     "missing": 0,
     "unexpected": 0
   },
-  "mutation_classes": {
-    "observe": 9,
-    "recommend": 5,
-    "mutate": 2
+  "safety_classes": {
+    "read": 9,
+    "propose": 5,
+    "write": 2
   },
   "projects": [
     {
@@ -241,7 +241,7 @@ Columns:
 - status
 - version
 - agent class
-- mutation class
+- safety class
 - capabilities count
 - owner
 - last seen
@@ -250,7 +250,7 @@ Filters:
 
 - project
 - status
-- mutation class
+- safety class
 - agent class
 - expected only
 
@@ -262,7 +262,7 @@ Query params:
 
 - `project`
 - `status`
-- `mutation_class`
+- `safety_class`
 - `agent_class`
 - `expected_only=true|false`
 
@@ -279,7 +279,7 @@ Response:
       "status": "ready",
       "version": "ebcf921",
       "agent_class": "worker",
-      "mutation_class": "observe",
+      "safety_class": "read",
       "capabilities": ["triage-summarizer"],
       "owner": "ucla-tdg-email-triage",
       "repo": "github.com/joelkehle/ucla-tdg-email-triage",
@@ -322,7 +322,7 @@ Passport card fields:
 - description
 - capabilities
 - agent class
-- mutation class
+- safety class
 - build commit / dirty
 - owner
 - repo
@@ -346,7 +346,7 @@ Response:
       "version": "ebcf921",
       "description": "Summarizes inbound email threads",
       "agent_class": "worker",
-      "mutation_class": "observe",
+      "safety_class": "read",
       "capabilities": ["triage-summarizer"],
       "build": {
         "commit": "ebcf921",
@@ -413,7 +413,7 @@ Fields:
 - capability name
 - project
 - producer agents
-- mutation class
+- safety class
 - summary
 - source doc link
 
@@ -430,7 +430,7 @@ Response:
       "name": "triage-summarizer",
       "project_id": "ucla-tdg-email-triage",
       "producer_agents": ["triage-summarizer"],
-      "mutation_class": "observe",
+      "safety_class": "read",
       "summary": "Summarizes inbound email thread packs",
       "doc_path": "/docs/capabilities/triage-summarizer"
     }
@@ -488,7 +488,7 @@ Response:
   "delivery": {
     "timeout_expectation": "operator expectation, not hard daemon timeout",
     "idempotency": "best effort",
-    "side_effect_model": "observe",
+    "side_effect_model": "read",
     "retry_safety": "safe if duplicate summaries are tolerated"
   },
   "dependencies": ["triage-claude-builder", "triage-codex-builder"],
@@ -812,7 +812,7 @@ Response:
 {
   "nodes": [
     { "id": "ucla-tdg-email-triage", "type": "project" },
-    { "id": "triage-summarizer", "type": "agent", "mutation_class": "observe" },
+    { "id": "triage-summarizer", "type": "agent", "safety_class": "read" },
     { "id": "triage-summarizer-cap", "type": "capability" }
   ],
   "edges": [

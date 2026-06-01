@@ -53,7 +53,7 @@ Consume the client SDK via `github.com/joelkehle/pinakes/pkg/busclient`.
 
 - Pin released tags in `go.mod`; do not depend on floating branches or pseudo-versions unless you are testing an unreleased change.
 - Treat `pkg/busclient` as the supported integration surface for Go consumers.
-- `pkg/busclient` supports legacy registration plus richer passport registration/listing metadata (`version`, `description`, `agent_class`, `mutation_class`, `build`, `meta`).
+- `pkg/busclient` supports legacy registration plus richer passport registration/listing metadata (`version`, `description`, `agent_class`, safety class, `build`, `meta`).
 - Clean downstream passport adoption starts at `pinakes` `v0.2.0` or later. `v0.1.x` does not provide the shared `RegisterAgentWithPassport(...)` client surface.
 - Downstream repos can remove vendored or copied passport client code only after two things are true:
   1. their `go.mod` pins a released `pinakes` tag with passport support (`v0.2.0`+)

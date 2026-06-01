@@ -19,7 +19,7 @@ The bus routes opaque messages. This contract tells producers, consumers, and op
 
 **Agent:** `<agent_id>`
 **Owner:** `<repo>`
-**Mutation class:** `observe` | `recommend` | `mutate`
+**Safety class:** `read` | `propose` | `write`
 
 ### Purpose
 

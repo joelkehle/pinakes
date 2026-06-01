@@ -78,7 +78,7 @@ The key protocol concept. An agent presents a passport at registration. The pass
 
 - agent_id, version, description, capabilities
 - agent_class (worker / orchestrator)
-- mutation_class (observe / recommend / mutate)
+- safety class (`read` / `propose` / `write`; current wire field may still use legacy values)
 - transport fields (mode, callback_url)
 - optional: owner, repo, health_url, build metadata
 
@@ -93,20 +93,20 @@ The key protocol concept. An agent presents a passport at registration. The pass
 
 The test: "Does the bus or the promotion controller need this at runtime without consulting external files?" If yes, passport. If no, docs.
 
-## Mutation Class
+## Safety Class
 
 A first-class governance primitive on the passport.
 
 | Class | Meaning | Example |
 |-------|---------|---------|
-| `observe` | Reads, classifies, summarizes, enriches. No external mutation. | patent-screen, market-analysis |
-| `recommend` | Proposes actions/artifacts for human or downstream approval. | prior-art-search, disclosure-processor |
-| `mutate` | Can change external state or trigger irreversible side effects. | email senders, record updaters |
+| `read` | Reads, classifies, summarizes, enriches. No external writes. | patent-screen, market-analysis |
+| `propose` | Proposes actions/artifacts for human or downstream approval. | prior-art-search, disclosure-processor |
+| `write` | Can change external state or trigger irreversible side effects. | email senders, record updaters |
 
 Declared by the agent, not enforced by the bus. Consumed by:
 
 - Ops page (humans see which agents can change real systems)
-- Promotion tooling (stricter verification for mutators)
+- Promotion tooling (stricter verification for write-capable agents)
 - Future policy hooks (without overbuilding now)
 
 ## What Pinakes Is Not
