@@ -23,6 +23,7 @@ READ `~/Projects/shared/agent-scripts/AGENTS.MD` BEFORE ANYTHING (skip if missin
 
 # Testing Strategy
 
+- Validation entrypoint: `agent-check`
 - Default gate: `go test ./...`
 - Protocol changes should include contract tests in `pkg/httpapi/contract_test.go`.
 
