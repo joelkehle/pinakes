@@ -145,6 +145,52 @@ func TestPersistentStoreReadSweepPersist(t *testing.T) {
 	}
 }
 
+func TestPersistentStoreAgentSecretsRoundTripAndFileMode(t *testing.T) {
+	tmp := t.TempDir()
+	statePath := filepath.Join(tmp, "state.json")
+	cfg := Config{
+		GracePeriod:            30 * time.Second,
+		ProgressMinInterval:    2 * time.Second,
+		IdempotencyWindow:      24 * time.Hour,
+		InboxWaitMax:           1 * time.Second,
+		AckTimeout:             10 * time.Second,
+		DefaultMessageTTL:      600 * time.Second,
+		DefaultRegistrationTTL: 60 * time.Second,
+		Clock:                  time.Now,
+	}
+
+	s1, err := NewPersistentStore(statePath, cfg)
+	if err != nil {
+		t.Fatalf("new persistent store: %v", err)
+	}
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+		t.Fatalf("register a: %v", err)
+	}
+	if err := s1.SetAgentSecret("a", "secret-a"); err != nil {
+		t.Fatalf("set secret: %v", err)
+	}
+
+	info, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("stat state file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("state file mode=%#o want 0600", got)
+	}
+
+	s2, err := NewPersistentStore(statePath, cfg)
+	if err != nil {
+		t.Fatalf("reopen persistent store: %v", err)
+	}
+	secrets, err := s2.AgentSecrets()
+	if err != nil {
+		t.Fatalf("agent secrets: %v", err)
+	}
+	if secrets["a"] != "secret-a" {
+		t.Fatalf("secret not restored: %#v", secrets)
+	}
+}
+
 func TestPersistentStoreRejectsCorruptStateFile(t *testing.T) {
 	tmp := t.TempDir()
 	statePath := filepath.Join(tmp, "state.json")

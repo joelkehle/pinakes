@@ -33,6 +33,7 @@ const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS agents (
 	agent_id      TEXT PRIMARY KEY,
 	capabilities  TEXT NOT NULL DEFAULT '[]',
+	secret        TEXT NOT NULL DEFAULT '',
 	version       TEXT NOT NULL DEFAULT '',
 	description   TEXT NOT NULL DEFAULT '',
 	agent_class   TEXT NOT NULL DEFAULT '',
@@ -151,6 +152,7 @@ func ensureAgentColumns(db *sqlx.DB) error {
 		name string
 		sql  string
 	}{
+		{name: "secret", sql: `ALTER TABLE agents ADD COLUMN secret TEXT NOT NULL DEFAULT ''`},
 		{name: "version", sql: `ALTER TABLE agents ADD COLUMN version TEXT NOT NULL DEFAULT ''`},
 		{name: "agent_class", sql: `ALTER TABLE agents ADD COLUMN agent_class TEXT NOT NULL DEFAULT ''`},
 		{name: "mutation_class", sql: `ALTER TABLE agents ADD COLUMN mutation_class TEXT NOT NULL DEFAULT ''`},
@@ -370,8 +372,22 @@ type sqliteExec interface {
 }
 
 func saveAgentTo(exec sqliteExec, a *Agent) error {
-	_, err := exec.Exec(`INSERT OR REPLACE INTO agents (agent_id, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := exec.Exec(`INSERT INTO agents (agent_id, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET
+			capabilities=excluded.capabilities,
+			version=excluded.version,
+			description=excluded.description,
+			agent_class=excluded.agent_class,
+			mutation_class=excluded.mutation_class,
+			build=excluded.build,
+			meta=excluded.meta,
+			mode=excluded.mode,
+			callback_url=excluded.callback_url,
+			status=excluded.status,
+			registered_at=excluded.registered_at,
+			expires_at=excluded.expires_at,
+			ttl_seconds=excluded.ttl_seconds`,
 		a.AgentID,
 		marshalJSON(a.Capabilities),
 		a.Version,
@@ -562,6 +578,46 @@ func (s *SQLiteStore) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	return out, nil
 }
 
+func (s *SQLiteStore) AgentSecrets() (map[string]string, error) {
+	rows, err := s.db.Query("SELECT agent_id, secret FROM agents WHERE secret <> ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var agentID, secret string
+		if err := rows.Scan(&agentID, &secret); err != nil {
+			return nil, err
+		}
+		agentID = strings.TrimSpace(agentID)
+		if agentID != "" && strings.TrimSpace(secret) != "" {
+			out[agentID] = secret
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) SetAgentSecret(agentID, secret string) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || strings.TrimSpace(secret) == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec("UPDATE agents SET secret = ? WHERE agent_id = ?", secret, agentID)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("agent %s not found", agentID)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) ListAgents(capability string) []Agent {
 	return s.inner.ListAgents(capability)
 }
@@ -688,5 +744,6 @@ func (s *SQLiteStore) GetMessageForTest(messageID string) (Message, bool) {
 	return s.inner.GetMessageForTest(messageID)
 }
 
-// Ensure SQLiteStore satisfies the API interface at compile time.
+// Ensure SQLiteStore satisfies the API interfaces at compile time.
 var _ API = (*SQLiteStore)(nil)
+var _ AgentSecretStore = (*SQLiteStore)(nil)

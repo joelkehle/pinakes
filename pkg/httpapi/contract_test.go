@@ -26,9 +26,8 @@ func signPayload(secret string, payload []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func newContractServer() http.Handler {
-	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
-	store := bus.NewStore(bus.Config{
+func contractConfig(now time.Time) bus.Config {
+	return bus.Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,
@@ -39,7 +38,12 @@ func newContractServer() http.Handler {
 		Clock: func() time.Time {
 			return now
 		},
-	})
+	}
+}
+
+func newContractServer() http.Handler {
+	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
+	store := bus.NewStore(contractConfig(now))
 	return NewServer(store)
 }
 
@@ -47,18 +51,7 @@ func newContractServerPersistent(t *testing.T) http.Handler {
 	t.Helper()
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
 	statePath := t.TempDir() + "/state.json"
-	store, err := bus.NewPersistentStore(statePath, bus.Config{
-		GracePeriod:            30 * time.Second,
-		ProgressMinInterval:    2 * time.Second,
-		IdempotencyWindow:      24 * time.Hour,
-		InboxWaitMax:           1 * time.Second,
-		AckTimeout:             10 * time.Second,
-		DefaultMessageTTL:      600 * time.Second,
-		DefaultRegistrationTTL: 60 * time.Second,
-		Clock: func() time.Time {
-			return now
-		},
-	})
+	store, err := bus.NewPersistentStore(statePath, contractConfig(now))
 	if err != nil {
 		t.Fatalf("new persistent store: %v", err)
 	}
@@ -237,6 +230,103 @@ func TestContractAllEndpoints(t *testing.T) {
 
 func TestContractAllEndpointsPersistentBackend(t *testing.T) {
 	runContractAllEndpoints(t, newContractServerPersistent(t))
+}
+
+func TestContractJSONSecretsSurviveRestartWithoutReregistration(t *testing.T) {
+	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
+	statePath := t.TempDir() + "/state.json"
+	store1, err := bus.NewPersistentStore(statePath, contractConfig(now))
+	if err != nil {
+		t.Fatalf("new persistent store: %v", err)
+	}
+	h1 := NewServer(store1)
+	ts1 := httptest.NewServer(h1)
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts1.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+	}, nil), http.StatusOK)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts1.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+	}, nil), http.StatusOK)
+	ts1.CloseClientConnections()
+	ts1.Close()
+
+	store2, err := bus.NewPersistentStore(statePath, contractConfig(now))
+	if err != nil {
+		t.Fatalf("reopen persistent store: %v", err)
+	}
+	h2 := NewServer(store2)
+	ts2 := httptest.NewServer(h2)
+	defer func() {
+		ts2.CloseClientConnections()
+		ts2.Close()
+	}()
+
+	sendReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-json-secret-restart", "type": "request", "body": "after restart"}
+	sendBlob, _ := json.Marshal(sendReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts2.URL+"/v1/messages", sendReq, map[string]string{
+		"X-Bus-Signature": signPayload("secret-a", sendBlob),
+	}), http.StatusOK)
+}
+
+func TestContractSQLiteSecretsSurviveRestartWithoutReregistration(t *testing.T) {
+	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
+	dbPath := t.TempDir() + "/state.db"
+	store1, err := bus.NewSQLiteStore(dbPath, contractConfig(now))
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	h1 := NewServer(store1)
+	ts1 := httptest.NewServer(h1)
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts1.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+	}, nil), http.StatusOK)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts1.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+	}, nil), http.StatusOK)
+	ts1.CloseClientConnections()
+	ts1.Close()
+	if err := store1.Close(); err != nil {
+		t.Fatalf("close first sqlite store: %v", err)
+	}
+
+	store2, err := bus.NewSQLiteStore(dbPath, contractConfig(now))
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer store2.Close()
+	h2 := NewServer(store2)
+	ts2 := httptest.NewServer(h2)
+	defer func() {
+		ts2.CloseClientConnections()
+		ts2.Close()
+	}()
+
+	sendReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-sqlite-secret-restart", "type": "request", "body": "after restart"}
+	sendBlob, _ := json.Marshal(sendReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts2.URL+"/v1/messages", sendReq, map[string]string{
+		"X-Bus-Signature": signPayload("secret-a", sendBlob),
+	}), http.StatusOK)
+}
+
+func TestContractListAgentsDoesNotLeakSecrets(t *testing.T) {
+	ts := httptest.NewServer(newContractServer())
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "agent-no-leak", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "supersecret-no-leak",
+	}, nil), http.StatusOK)
+	body := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/agents", nil, nil), http.StatusOK)
+	if bytes.Contains(body, []byte("supersecret-no-leak")) || bytes.Contains(body, []byte(`"secret"`)) {
+		t.Fatalf("agent listing leaked secret material: %s", string(body))
+	}
 }
 
 func TestContractPassportRegistrationRoundTrip(t *testing.T) {

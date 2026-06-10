@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,6 +16,7 @@ type persistentState struct {
 	PushFailures         int64                       `json:"push_failures"`
 	PushSuccesses        int64                       `json:"push_successes"`
 	Agents               map[string]Agent            `json:"agents"`
+	AgentSecrets         map[string]string           `json:"agent_secrets,omitempty"`
 	Conversations        map[string]Conversation     `json:"conversations"`
 	Messages             map[string]Message          `json:"messages"`
 	ConversationMessages map[string][]string         `json:"conversation_messages"`
@@ -27,6 +29,7 @@ type persistentState struct {
 type PersistentStore struct {
 	inner          *Store
 	path           string
+	agentSecrets   map[string]string
 	mu             sync.Mutex
 	lastPersistErr string
 }
@@ -34,8 +37,9 @@ type PersistentStore struct {
 func NewPersistentStore(path string, cfg Config) (*PersistentStore, error) {
 	inner := NewStore(cfg)
 	ps := &PersistentStore{
-		inner: inner,
-		path:  path,
+		inner:        inner,
+		path:         path,
+		agentSecrets: map[string]string{},
 	}
 	if err := ps.load(); err != nil {
 		return nil, err
@@ -54,6 +58,7 @@ func (p *PersistentStore) stateSnapshot() persistentState {
 		PushFailures:         p.inner.pushFailures,
 		PushSuccesses:        p.inner.pushSuccesses,
 		Agents:               map[string]Agent{},
+		AgentSecrets:         map[string]string{},
 		Conversations:        map[string]Conversation{},
 		Messages:             map[string]Message{},
 		ConversationMessages: map[string][]string{},
@@ -65,6 +70,9 @@ func (p *PersistentStore) stateSnapshot() persistentState {
 	for k, v := range p.inner.agents {
 		cp := *v
 		state.Agents[k] = cp
+	}
+	for k, v := range p.agentSecrets {
+		state.AgentSecrets[k] = v
 	}
 	for k, v := range p.inner.conversations {
 		cp := *v
@@ -92,6 +100,14 @@ func (p *PersistentStore) stateSnapshot() persistentState {
 func (p *PersistentStore) applyState(state persistentState) {
 	p.inner.mu.Lock()
 	defer p.inner.mu.Unlock()
+
+	p.agentSecrets = map[string]string{}
+	for k, v := range state.AgentSecrets {
+		agentID := strings.TrimSpace(k)
+		if agentID != "" && strings.TrimSpace(v) != "" {
+			p.agentSecrets[agentID] = v
+		}
+	}
 
 	p.inner.nextConversationID = state.NextConversationID
 	p.inner.nextMessageID = state.NextMessageID
@@ -152,7 +168,7 @@ func (p *PersistentStore) persist() error {
 		return err
 	}
 	tmp := p.path + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0o644); err != nil {
+	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
 		p.lastPersistErr = err.Error()
 		return err
 	}
@@ -175,12 +191,38 @@ func (p *PersistentStore) load() error {
 		}
 		return err
 	}
+	if err := os.Chmod(p.path, 0o600); err != nil {
+		return err
+	}
 	var state persistentState
 	if err := json.Unmarshal(blob, &state); err != nil {
 		return err
 	}
 	p.applyState(state)
 	return nil
+}
+
+func (p *PersistentStore) AgentSecrets() (map[string]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	out := make(map[string]string, len(p.agentSecrets))
+	for k, v := range p.agentSecrets {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (p *PersistentStore) SetAgentSecret(agentID, secret string) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || strings.TrimSpace(secret) == "" {
+		return nil
+	}
+
+	p.mu.Lock()
+	p.agentSecrets[agentID] = secret
+	p.mu.Unlock()
+	return p.persist()
 }
 
 func (p *PersistentStore) persistBestEffort() {
@@ -300,3 +342,5 @@ func (p *PersistentStore) SystemStatus() map[string]any {
 	}
 	return out
 }
+
+var _ AgentSecretStore = (*PersistentStore)(nil)

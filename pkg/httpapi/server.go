@@ -58,6 +58,9 @@ func NewServerFromEnv(store bus.API) (*Server, error) {
 		agentAllowset: allowset,
 		logger:        log.New(os.Stdout, "pinakes ", log.LstdFlags),
 	}
+	if err := s.loadPersistedAgentSecrets(); err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/agents/register", s.handleRegisterAgent)
 	mux.HandleFunc("/v1/agents", s.handleListAgents)
@@ -324,12 +327,6 @@ func (s *Server) verifySignature(agentID, signature string, payload []byte) erro
 	return nil
 }
 
-func (s *Server) setAgentSecret(agentID, secret string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.agentSecrets[agentID] = secret
-}
-
 func (s *Server) isAgentAllowed(agentID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -394,7 +391,10 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 		writeBusError(w, err)
 		return
 	}
-	s.setAgentSecret(agent.AgentID, req.Secret)
+	if err := s.setAgentSecret(agent.AgentID, req.Secret); err != nil {
+		writeBusError(w, err)
+		return
+	}
 
 	writeJSON(w, 200, map[string]any{
 		"ok":         true,

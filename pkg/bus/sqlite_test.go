@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -99,6 +100,110 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	}
 	if msgs[0].Body != "persist in sqlite" {
 		t.Fatalf("expected body 'persist in sqlite', got %q", msgs[0].Body)
+	}
+}
+
+func TestSQLiteAgentSecretsRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "secrets.db")
+	cfg := Config{
+		GracePeriod:            30 * time.Second,
+		ProgressMinInterval:    2 * time.Second,
+		IdempotencyWindow:      24 * time.Hour,
+		InboxWaitMax:           1 * time.Second,
+		AckTimeout:             10 * time.Second,
+		DefaultMessageTTL:      600 * time.Second,
+		DefaultRegistrationTTL: 60 * time.Second,
+		Clock:                  time.Now,
+	}
+
+	s1, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+		t.Fatalf("register a: %v", err)
+	}
+	if err := s1.SetAgentSecret("a", "secret-a"); err != nil {
+		t.Fatalf("set secret: %v", err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	s2, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer s2.Close()
+	secrets, err := s2.AgentSecrets()
+	if err != nil {
+		t.Fatalf("agent secrets: %v", err)
+	}
+	if secrets["a"] != "secret-a" {
+		t.Fatalf("secret not restored: %#v", secrets)
+	}
+}
+
+func TestSQLiteMigratesAgentSecretColumn(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "legacy.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy sqlite: %v", err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE agents (
+	agent_id      TEXT PRIMARY KEY,
+	capabilities  TEXT NOT NULL DEFAULT '[]',
+	version       TEXT NOT NULL DEFAULT '',
+	description   TEXT NOT NULL DEFAULT '',
+	agent_class   TEXT NOT NULL DEFAULT '',
+	mutation_class TEXT NOT NULL DEFAULT '',
+	build         TEXT,
+	meta          TEXT,
+	mode          TEXT NOT NULL DEFAULT 'pull',
+	callback_url  TEXT NOT NULL DEFAULT '',
+	status        TEXT NOT NULL DEFAULT 'active',
+	registered_at TEXT NOT NULL,
+	expires_at    TEXT NOT NULL,
+	ttl_seconds   INTEGER NOT NULL DEFAULT 60
+);`)
+	if err != nil {
+		t.Fatalf("create legacy agents table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+
+	s, err := NewSQLiteStore(dbPath, Config{Clock: time.Now})
+	if err != nil {
+		t.Fatalf("new sqlite store with legacy schema: %v", err)
+	}
+	defer s.Close()
+
+	rows, err := s.db.Query("PRAGMA table_info(agents)")
+	if err != nil {
+		t.Fatalf("pragma table_info: %v", err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var defaultV sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultV, &primaryKey); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		if name == "secret" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows error: %v", err)
+	}
+	if !found {
+		t.Fatalf("secret column missing after migration")
 	}
 }
 

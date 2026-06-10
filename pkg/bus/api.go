@@ -20,3 +20,10 @@ type API interface {
 	Metrics() string
 	SystemStatus() map[string]any
 }
+
+// AgentSecretStore is implemented by durable stores that persist shared
+// agent secrets outside the public Agent model.
+type AgentSecretStore interface {
+	AgentSecrets() (map[string]string, error)
+	SetAgentSecret(agentID, secret string) error
+}

@@ -8,7 +8,7 @@
 
 ## Problem
 
-Three compose stacks share one pinakes bus. Adding a new agent to the allowlist requires restarting the bus, which forces all agents to re-register. Combined with the Compose v1 `ContainerConfig` bug, this creates cascading instability that makes single-agent updates feel like full-stack restarts.
+Three compose stacks share one pinakes bus. Adding a new agent to the allowlist used to require restarting the bus, which forced all agents to re-register because agent HMAC secrets were memory-only. The allowlist restart path was removed by hot reload, and the secret-loss root cause is fixed by the 2026-06 security-hardening Phase 1 persistence change. The remaining stability risk is Compose v1 `ContainerConfig` cascading instability during stack work.
 
 ## Three fixes, in priority order
 
