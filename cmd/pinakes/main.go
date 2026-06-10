@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joelkehle/pinakes/pkg/bus"
@@ -48,6 +51,44 @@ func envInt(name string) int {
 	return v
 }
 
+func runHTTPServer(addr string, handler http.Handler, store bus.API) {
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	httpSrv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		// ReadTimeout/WriteTimeout stay unset: inbox long-polls can run for
+		// 60s, and observe SSE streams are intentionally open-ended.
+	}
+
+	log.Printf("pinakes listening on %s", addr)
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	<-shutdownCtx.Done()
+	stop()
+	log.Printf("shutdown requested")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		// Long-poll/SSE clients retry; exit after the grace window even if
+		// in-flight requests keep the server from draining cleanly.
+		log.Printf("WARN http shutdown: %v", err)
+	}
+
+	if c, ok := store.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			log.Printf("WARN closing store: %v", err)
+		}
+	}
+}
+
 func main() {
 	dbFlag := flag.String("db", "", "path to SQLite database file (overrides DB_PATH env var)")
 	flag.Parse()
@@ -79,40 +120,55 @@ func main() {
 		MaxObserveBytes:       envInt("MAX_OBSERVE_BYTES"),
 	}
 
-	// Resolve DB path: --db flag > DB_PATH env > empty (use legacy backend).
+	// Resolve DB path: --db flag > DB_PATH env > backend default. An explicit
+	// path always selects SQLite; otherwise STORE_BACKEND picks the backend
+	// and defaults to sqlite when unset.
 	dbPath := *dbFlag
 	if dbPath == "" {
 		dbPath = os.Getenv("DB_PATH")
 	}
+	backend := strings.TrimSpace(os.Getenv("STORE_BACKEND"))
+	if dbPath != "" || backend == "" {
+		backend = "sqlite"
+	}
+
+	statePath := os.Getenv("STATE_FILE")
+	if statePath == "" {
+		statePath = "./data/state.json"
+	}
 
 	var store bus.API
-	if dbPath != "" {
+	switch backend {
+	case "sqlite":
+		if dbPath == "" {
+			dbPath = "./data/bus.db"
+		}
+		// One-time import of the legacy JSON state file: runs only when the
+		// DB file does not exist yet and the state file does. Failing loudly
+		// here beats silently booting an empty bus over live state.
+		if _, err := bus.MigrateJSONStateToSQLite(statePath, dbPath, cfg); err != nil {
+			log.Fatalf("failed to migrate legacy JSON state into sqlite: %v", err)
+		}
 		ss, err := bus.NewSQLiteStore(dbPath, cfg)
 		if err != nil {
 			log.Fatalf("failed to initialize sqlite store (%s): %v", dbPath, err)
 		}
 		store = ss
 		log.Printf("using sqlite store at %s", dbPath)
-	} else {
-		backend := os.Getenv("STORE_BACKEND")
-		if backend == "" {
-			backend = "persistent"
+	case "memory":
+		store = bus.NewStore(cfg)
+	default:
+		// "persistent", "json", and (for backward compatibility) any other
+		// unrecognized value select the legacy JSON-file backend.
+		if backend != "persistent" && backend != "json" {
+			log.Printf("WARN unrecognized STORE_BACKEND=%q, using persistent JSON backend", backend)
 		}
-		switch backend {
-		case "memory":
-			store = bus.NewStore(cfg)
-		default:
-			statePath := os.Getenv("STATE_FILE")
-			if statePath == "" {
-				statePath = "./data/state.json"
-			}
-			ps, err := bus.NewPersistentStore(statePath, cfg)
-			if err != nil {
-				log.Fatalf("failed to initialize persistent store (%s): %v", statePath, err)
-			}
-			store = ps
-			log.Printf("using persistent store at %s", statePath)
+		ps, err := bus.NewPersistentStore(statePath, cfg)
+		if err != nil {
+			log.Fatalf("failed to initialize persistent store (%s): %v", statePath, err)
 		}
+		store = ps
+		log.Printf("using persistent store at %s", statePath)
 	}
 
 	server, err := httpapi.NewServerFromEnv(store)
@@ -125,8 +181,5 @@ func main() {
 		}
 		log.Printf("watching allowlist file %s", allowlistFile)
 	}
-	log.Printf("pinakes listening on %s", addr)
-	if err := http.ListenAndServe(addr, server); err != nil {
-		log.Fatal(err)
-	}
+	runHTTPServer(addr, server, store)
 }

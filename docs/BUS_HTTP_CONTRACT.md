@@ -178,11 +178,13 @@ This doc describes the extracted bus contract as implemented by:
 - `STORE_BACKEND`
   - used only when neither `--db` nor `DB_PATH` is set
   - supported current values:
+    - `sqlite` => SQLite store at `./data/bus.db`
+    - `persistent` / `json` => legacy persistent JSON-file backend at `STATE_FILE`
     - `memory`
-    - any other value => persistent JSON-file backend
-  - default when unset: `persistent`
+    - any other value => legacy persistent JSON-file backend (backward compatibility)
+  - default when unset: `sqlite`
 - `STATE_FILE`
-  - path for persistent JSON-file backend
+  - path for the legacy persistent JSON-file backend, and the migration source when the SQLite backend boots for the first time (see "Migration from the JSON backend")
   - default: `./data/state.json`
 - `ALLOWLIST_FILE`
   - path to newline-delimited agent allowlist file
@@ -229,10 +231,19 @@ This doc describes the extracted bus contract as implemented by:
 
 ### Store selection order
 
-1. `--db`
-2. `DB_PATH`
-3. `STORE_BACKEND=memory`
-4. persistent JSON-file backend using `STATE_FILE`
+1. `--db` => SQLite at that path
+2. `DB_PATH` => SQLite at that path
+3. `STORE_BACKEND=memory` => in-memory store
+4. `STORE_BACKEND=persistent` / `json` (or any other unrecognized value) => persistent JSON-file backend using `STATE_FILE`
+5. default (`STORE_BACKEND` unset or `sqlite`) => SQLite at `./data/bus.db`
+
+### Migration from the JSON backend
+
+- Runs once at startup when all three hold: the resolved backend is SQLite, the SQLite db file does not exist yet, and the legacy `STATE_FILE` exists.
+- Imports agents (with registration metadata and secrets), conversations, messages (including terminal/lifecycle timestamps), conversation message ordering, and id counters.
+- Inbox buffers, observe events, and idempotency entries are transient and dropped once at migration: undelivered inbox events are lost, and affected in-flight requests will ack-timeout to `error`.
+- On success the state file is renamed to `state.json.migrated` and kept as a backup; it is never deleted.
+- The import writes into `<db>.tmp` and atomically renames it to the final db path only after the import transaction commits, so the final db file is never partially written. On any import error the bus fails startup loudly instead of booting an empty store; temp artifacts are removed (on error immediately, on crash at the next boot) so the next boot retries the migration.
 
 ## Runtime Defaults
 
@@ -247,6 +258,8 @@ These values are currently hard-coded in [main.go](/home/joelkehle/Projects/shar
 - `DefaultRegistrationTTL = 60s`
 - `PushMaxAttempts = 3`
 - `PushBaseBackoff = 500ms`
+- `PushQueueSize = 256` — capacity of the bounded push-callback queue drained by the worker pool; when full, new push deliveries are dropped (logged, counted in `push_failures`) instead of blocking the API path or spawning unbounded goroutines.
+- `PushWorkers = 4` — fixed pool of worker goroutines draining the push queue.
 - `MaxInboxEventsPerAgent = 10000`
 - `MaxObserveEvents = 50000`
 - `SweepMinInterval = 250ms` — minimum gap between full sweep passes. The bus skips redundant sweeps inside this window so long-poll cycles do not re-walk hundreds of thousands of retained messages on every wake. The first sweep after process start always runs; agent expiry, TTL expiry, and ack-timeout transitions land within one `SweepMinInterval` of their deadline.
@@ -256,6 +269,7 @@ Important current behavior:
 
 - the non-retention tunables are not externally configurable via env vars today
 - extraction should preserve them unless a deliberate compatibility change is called out
+- on SIGINT/SIGTERM the bus stops accepting connections, waits up to 10s for in-flight requests to drain, then exits 0; long-polling and SSE clients should expect dropped connections at shutdown and retry
 
 ## Retention And Memory Reclamation
 
