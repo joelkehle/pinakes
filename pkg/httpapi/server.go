@@ -32,8 +32,26 @@ type Server struct {
 	agentAllowset map[string]struct{}
 	injectTokens  map[string]struct{}
 	observeTokens map[string]struct{}
+	maxBodyBytes  int64
 	handler       http.Handler
 	logger        *log.Logger
+}
+
+const defaultMaxBodyBytes = 2 << 20 // 2 MiB
+
+func parseMaxBodyBytes(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultMaxBodyBytes, nil
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid MAX_BODY_BYTES %q: %w", raw, err)
+	}
+	if v < 0 {
+		v = 0 // disabled
+	}
+	return v, nil
 }
 
 func NewServer(store bus.API) http.Handler {
@@ -54,12 +72,17 @@ func NewServerFromEnv(store bus.API) (*Server, error) {
 			return nil, fmt.Errorf("load allowlist file %s: %w", allowlistFile, err)
 		}
 	}
+	maxBodyBytes, err := parseMaxBodyBytes(os.Getenv("MAX_BODY_BYTES"))
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		store:         store,
 		agentSecrets:  map[string]string{},
 		agentAllowset: allowset,
 		injectTokens:  parseTokenEnv(os.Getenv("INJECT_TOKENS")),
 		observeTokens: parseTokenEnv(os.Getenv("OBSERVE_TOKENS")),
+		maxBodyBytes:  maxBodyBytes,
 		logger:        log.New(os.Stdout, "pinakes ", log.LstdFlags),
 	}
 	if err := s.loadPersistedAgentSecrets(); err != nil {
@@ -219,6 +242,16 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// busErrorOrValidation passes typed bus errors through (e.g. 413 payload
+// caps) and wraps anything else as a validation error.
+func busErrorOrValidation(err error) error {
+	var be *bus.Error
+	if errors.As(err, &be) {
+		return be
+	}
+	return bus.NewValidationJSONError(err)
+}
+
 func writeBusError(w http.ResponseWriter, err error) {
 	var be *bus.Error
 	if errors.As(err, &be) {
@@ -247,12 +280,27 @@ func writeBusError(w http.ResponseWriter, err error) {
 	})
 }
 
-func readBody(r *http.Request) ([]byte, error) {
+// readBody reads the request body under the configured size cap. Oversized
+// payloads return a 413 bus error: unbounded bodies let a single publish blow
+// the bus past its container memory limit.
+func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	if r.Body == nil {
 		return []byte("{}"), nil
 	}
-	blob, err := io.ReadAll(r.Body)
+	body := r.Body
+	if s.maxBodyBytes > 0 {
+		body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
+	}
+	blob, err := io.ReadAll(body)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return nil, &bus.Error{
+				Code:    bus.CodePayloadTooLarge,
+				Message: fmt.Sprintf("request body exceeds %d bytes", mbe.Limit),
+				Status:  413,
+			}
+		}
 		return nil, err
 	}
 	if len(blob) == 0 {
@@ -345,9 +393,9 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodPost) {
 		return
 	}
-	blob, err := readBody(r)
+	blob, err := s.readBody(w, r)
 	if err != nil {
-		writeBusError(w, bus.NewValidationJSONError(err))
+		writeBusError(w, busErrorOrValidation(err))
 		return
 	}
 	var req struct {
@@ -422,9 +470,9 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		blob, err := readBody(r)
+		blob, err := s.readBody(w, r)
 		if err != nil {
-			writeBusError(w, bus.NewValidationJSONError(err))
+			writeBusError(w, busErrorOrValidation(err))
 			return
 		}
 		if err := s.verifyConversationCreateAuth(r, blob); err != nil {
@@ -502,9 +550,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodPost) {
 		return
 	}
-	blob, err := readBody(r)
+	blob, err := s.readBody(w, r)
 	if err != nil {
-		writeBusError(w, bus.NewValidationJSONError(err))
+		writeBusError(w, busErrorOrValidation(err))
 		return
 	}
 	var req struct {
@@ -585,9 +633,9 @@ func (s *Server) handleAcks(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodPost) {
 		return
 	}
-	blob, err := readBody(r)
+	blob, err := s.readBody(w, r)
 	if err != nil {
-		writeBusError(w, bus.NewValidationJSONError(err))
+		writeBusError(w, busErrorOrValidation(err))
 		return
 	}
 	var req struct {
@@ -620,9 +668,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodPost) {
 		return
 	}
-	blob, err := readBody(r)
+	blob, err := s.readBody(w, r)
 	if err != nil {
-		writeBusError(w, bus.NewValidationJSONError(err))
+		writeBusError(w, busErrorOrValidation(err))
 		return
 	}
 	var req struct {
@@ -752,9 +800,9 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 		writeBusError(w, forbiddenError("inject token required"))
 		return
 	}
-	blob, err := readBody(r)
+	blob, err := s.readBody(w, r)
 	if err != nil {
-		writeBusError(w, bus.NewValidationJSONError(err))
+		writeBusError(w, busErrorOrValidation(err))
 		return
 	}
 	var req struct {

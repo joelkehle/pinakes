@@ -37,6 +37,29 @@ type Config struct {
 	PushBaseBackoff        time.Duration
 	MaxInboxEventsPerAgent int
 	MaxObserveEvents       int
+	// MaxInboxBytesPerAgent bounds the approximate retained payload bytes per
+	// agent inbox; oldest events are evicted first. Counts alone do not bound
+	// memory when individual bodies are large. Defaults to 32 MiB; negative
+	// disables.
+	MaxInboxBytesPerAgent int
+	// MaxObserveBytes bounds the approximate retained payload bytes of the
+	// observe ring. Defaults to 64 MiB; negative disables.
+	MaxObserveBytes int
+	// MessageRetention prunes terminal (completed/rejected/error) messages
+	// this long after they reached their terminal state. Defaults to 1h;
+	// negative disables.
+	MessageRetention time.Duration
+	// MessageMaxAge prunes any message, regardless of state, this long after
+	// creation. Backstop for stuck or legacy-loaded messages. Defaults to 24h;
+	// negative disables.
+	MessageMaxAge time.Duration
+	// ConversationRetention prunes conversations idle this long once all their
+	// messages have been pruned. Defaults to 24h; negative disables.
+	ConversationRetention time.Duration
+	// AgentRetention prunes expired agents (and their inboxes) this long after
+	// expiry. Returning agents simply re-register. Defaults to 24h; negative
+	// disables.
+	AgentRetention time.Duration
 	// SweepMinInterval bounds how often the expensive full-state sweep runs.
 	// Successive sweep calls inside this window are skipped, so idle hot paths
 	// (PollInbox / ObserveSince / Health / Metrics) stay cheap on stores
@@ -66,7 +89,9 @@ type Store struct {
 	conversationMessages map[string][]string
 	inboxes              map[string][]InboxEvent
 	inboxBase            map[string]int
+	inboxBytes           map[string]int
 	observeEvents        []ObserveEvent
+	observeBytes         int
 	idempotency          map[string]idempotencyEntry
 
 	lastSweepAt time.Time
@@ -127,6 +152,42 @@ func NewStore(cfg Config) *Store {
 	if cfg.MaxObserveEvents <= 0 {
 		cfg.MaxObserveEvents = 50000
 	}
+	if cfg.MaxInboxBytesPerAgent == 0 {
+		cfg.MaxInboxBytesPerAgent = 32 << 20
+	}
+	if cfg.MaxInboxBytesPerAgent < 0 {
+		cfg.MaxInboxBytesPerAgent = 0
+	}
+	if cfg.MaxObserveBytes == 0 {
+		cfg.MaxObserveBytes = 64 << 20
+	}
+	if cfg.MaxObserveBytes < 0 {
+		cfg.MaxObserveBytes = 0
+	}
+	if cfg.MessageRetention == 0 {
+		cfg.MessageRetention = time.Hour
+	}
+	if cfg.MessageRetention < 0 {
+		cfg.MessageRetention = 0
+	}
+	if cfg.MessageMaxAge == 0 {
+		cfg.MessageMaxAge = 24 * time.Hour
+	}
+	if cfg.MessageMaxAge < 0 {
+		cfg.MessageMaxAge = 0
+	}
+	if cfg.ConversationRetention == 0 {
+		cfg.ConversationRetention = 24 * time.Hour
+	}
+	if cfg.ConversationRetention < 0 {
+		cfg.ConversationRetention = 0
+	}
+	if cfg.AgentRetention == 0 {
+		cfg.AgentRetention = 24 * time.Hour
+	}
+	if cfg.AgentRetention < 0 {
+		cfg.AgentRetention = 0
+	}
 	if cfg.SweepMinInterval < 0 {
 		cfg.SweepMinInterval = 0
 	}
@@ -153,6 +214,7 @@ func NewStore(cfg Config) *Store {
 		conversationMessages: map[string][]string{},
 		inboxes:              map[string][]InboxEvent{},
 		inboxBase:            map[string]int{},
+		inboxBytes:           map[string]int{},
 		observeEvents:        []ObserveEvent{},
 		idempotency:          map[string]idempotencyEntry{},
 		inboxNotify:          map[string]chan struct{}{},
@@ -218,15 +280,60 @@ func isTerminal(state MessageState) bool {
 	}
 }
 
+// inboxEventSize approximates the retained bytes of an inbox event. Meta is
+// marshaled because it is opaque; this only runs on append and trim.
+func inboxEventSize(evt InboxEvent) int {
+	size := 64 + len(evt.MessageID) + len(evt.From) + len(evt.ConversationID) + len(evt.Body)
+	for _, a := range evt.Attachments {
+		size += 32 + len(a.URL) + len(a.Name) + len(a.ContentType) + len(a.SHA256)
+	}
+	if evt.Meta != nil {
+		if blob, err := json.Marshal(evt.Meta); err == nil {
+			size += len(blob)
+		}
+	}
+	return size
+}
+
 func (s *Store) appendInboxLocked(agentID string, evt InboxEvent) {
 	s.inboxes[agentID] = append(s.inboxes[agentID], evt)
-	max := s.cfg.MaxInboxEventsPerAgent
-	if max > 0 && len(s.inboxes[agentID]) > max {
-		drop := len(s.inboxes[agentID]) - max
-		s.inboxes[agentID] = append([]InboxEvent{}, s.inboxes[agentID][drop:]...)
-		s.inboxBase[agentID] += drop
+	s.inboxBytes[agentID] += inboxEventSize(evt)
+	events := s.inboxes[agentID]
+
+	drop := 0
+	if max := s.cfg.MaxInboxEventsPerAgent; max > 0 && len(events) > max {
+		drop = len(events) - max
+	}
+	// Byte budget: evict oldest first, but never the event just appended —
+	// the sender already got a success response for it.
+	if maxBytes := s.cfg.MaxInboxBytesPerAgent; maxBytes > 0 {
+		remaining := s.inboxBytes[agentID]
+		for i := 0; i < drop; i++ {
+			remaining -= inboxEventSize(events[i])
+		}
+		for drop < len(events)-1 && remaining > maxBytes {
+			remaining -= inboxEventSize(events[drop])
+			drop++
+		}
+	}
+	if drop > 0 {
+		s.dropInboxPrefixLocked(agentID, drop)
 	}
 	s.signalInboxLocked(agentID)
+}
+
+// dropInboxPrefixLocked removes the oldest n events from an agent inbox,
+// advancing the base cursor and byte accounting.
+func (s *Store) dropInboxPrefixLocked(agentID string, n int) {
+	events := s.inboxes[agentID]
+	if n <= 0 || n > len(events) {
+		return
+	}
+	for i := 0; i < n; i++ {
+		s.inboxBytes[agentID] -= inboxEventSize(events[i])
+	}
+	s.inboxes[agentID] = append([]InboxEvent{}, events[n:]...)
+	s.inboxBase[agentID] += n
 }
 
 // inboxNotifyChanLocked returns the broadcast channel for an agent inbox.
@@ -256,12 +363,44 @@ func (s *Store) signalObserveLocked() {
 	s.observeNotify = make(chan struct{})
 }
 
-func (s *Store) trimObserveLocked() {
-	max := s.cfg.MaxObserveEvents
-	if max > 0 && len(s.observeEvents) > max {
-		drop := len(s.observeEvents) - max
-		s.observeEvents = append([]ObserveEvent{}, s.observeEvents[drop:]...)
+// observeEventSize approximates the retained bytes of an observe event.
+func observeEventSize(evt ObserveEvent) int {
+	size := 64 + len(evt.ConversationID)
+	for _, id := range evt.AgentIDs {
+		size += len(id)
 	}
+	if evt.Data != nil {
+		if blob, err := json.Marshal(evt.Data); err == nil {
+			size += len(blob)
+		}
+	}
+	return size
+}
+
+func (s *Store) trimObserveLocked() {
+	events := s.observeEvents
+	drop := 0
+	if max := s.cfg.MaxObserveEvents; max > 0 && len(events) > max {
+		drop = len(events) - max
+	}
+	// Byte budget: evict oldest first, but always keep the newest event.
+	if maxBytes := s.cfg.MaxObserveBytes; maxBytes > 0 {
+		remaining := s.observeBytes
+		for i := 0; i < drop; i++ {
+			remaining -= events[i].Size
+		}
+		for drop < len(events)-1 && remaining > maxBytes {
+			remaining -= events[drop].Size
+			drop++
+		}
+	}
+	if drop == 0 {
+		return
+	}
+	for i := 0; i < drop; i++ {
+		s.observeBytes -= events[i].Size
+	}
+	s.observeEvents = append([]ObserveEvent{}, events[drop:]...)
 }
 
 func (s *Store) sendPushCallback(url string, payload map[string]any) {
@@ -307,14 +446,17 @@ func (s *Store) sendPushCallback(url string, payload map[string]any) {
 
 func (s *Store) publishLocked(eventType EventType, data any, conversationID string, agentIDs []string, at time.Time) {
 	s.nextObserveID++
-	s.observeEvents = append(s.observeEvents, ObserveEvent{
+	evt := ObserveEvent{
 		ID:             s.nextObserveID,
 		Type:           eventType,
 		At:             at,
 		Data:           data,
 		ConversationID: conversationID,
 		AgentIDs:       agentIDs,
-	})
+	}
+	evt.Size = observeEventSize(evt)
+	s.observeEvents = append(s.observeEvents, evt)
+	s.observeBytes += evt.Size
 	s.trimObserveLocked()
 	s.signalObserveLocked()
 }
@@ -379,6 +521,7 @@ func (s *Store) sweepLocked(now time.Time) {
 		if !m.TTLExpiresAt.IsZero() && now.After(m.TTLExpiresAt) {
 			from := m.State
 			m.State = StateError
+			m.TerminalAt = now
 			s.publishLocked(
 				ObserveStateChange,
 				map[string]any{
@@ -398,6 +541,7 @@ func (s *Store) sweepLocked(now time.Time) {
 		if m.State == StateWaitingAck && !m.DeliveredAt.IsZero() && now.Sub(m.DeliveredAt) > s.cfg.AckTimeout {
 			from := m.State
 			m.State = StateError
+			m.TerminalAt = now
 			s.publishLocked(
 				ObserveStateChange,
 				map[string]any{
@@ -436,6 +580,7 @@ func (s *Store) sweepLocked(now time.Time) {
 				from := m.State
 				m.QueuedForAgent = false
 				m.State = StateError
+				m.TerminalAt = now
 				s.publishLocked(
 					ObserveStateChange,
 					map[string]any{
@@ -450,6 +595,70 @@ func (s *Store) sweepLocked(now time.Time) {
 					now,
 				)
 			}
+		}
+	}
+
+	s.pruneLocked(now)
+}
+
+// pruneLocked reclaims memory: terminal messages past retention, any message
+// past the hard age cap, idle conversations whose messages are gone, and
+// expired agents (with their inboxes) past retention. Without this the bus
+// grows without bound between restarts and gets OOM-killed at the container
+// memory cap.
+func (s *Store) pruneLocked(now time.Time) {
+	if s.cfg.MessageRetention > 0 || s.cfg.MessageMaxAge > 0 {
+		for id, m := range s.messages {
+			prune := false
+			if s.cfg.MessageMaxAge > 0 && now.Sub(m.CreatedAt) > s.cfg.MessageMaxAge {
+				prune = true
+			} else if s.cfg.MessageRetention > 0 && isTerminal(m.State) {
+				terminalAt := m.TerminalAt
+				if terminalAt.IsZero() {
+					// Legacy state loaded without TerminalAt: fall back to
+					// CreatedAt so pre-retention backlogs drain promptly.
+					terminalAt = m.CreatedAt
+				}
+				if now.Sub(terminalAt) > s.cfg.MessageRetention {
+					prune = true
+				}
+			}
+			if prune {
+				delete(s.messages, id)
+			}
+		}
+	}
+
+	if s.cfg.ConversationRetention > 0 {
+		for cid, c := range s.conversations {
+			if now.Sub(c.LastMessageAt) <= s.cfg.ConversationRetention {
+				continue
+			}
+			live := false
+			for _, mid := range s.conversationMessages[cid] {
+				if _, ok := s.messages[mid]; ok {
+					live = true
+					break
+				}
+			}
+			if live {
+				continue
+			}
+			delete(s.conversations, cid)
+			delete(s.conversationMessages, cid)
+		}
+	}
+
+	if s.cfg.AgentRetention > 0 {
+		for id, a := range s.agents {
+			if a.Status != AgentStatusExpired || now.Sub(a.ExpiresAt) <= s.cfg.AgentRetention {
+				continue
+			}
+			delete(s.agents, id)
+			s.signalInboxLocked(id)
+			delete(s.inboxes, id)
+			delete(s.inboxBase, id)
+			delete(s.inboxBytes, id)
 		}
 	}
 }
@@ -512,6 +721,7 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if _, ok := s.inboxes[agentID]; !ok {
 		s.inboxes[agentID] = []InboxEvent{}
 		s.inboxBase[agentID] = 0
+		s.inboxBytes[agentID] = 0
 	}
 
 	s.publishLocked(
@@ -682,6 +892,7 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 
 	if msgType != MessageTypeRequest {
 		m.State = StateCompleted
+		m.TerminalAt = now
 	}
 
 	pushCallbackURL := ""
@@ -815,6 +1026,14 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 		if cursor > end {
 			cursor = end
 		}
+		// Cursor values originate from prior poll responses, so a poll at
+		// cursor C proves the agent received everything below C. Reclaim
+		// those events instead of holding them until a cap evicts them.
+		if cursor > base {
+			s.dropInboxPrefixLocked(agentID, cursor-base)
+			events = s.inboxes[agentID]
+			base = cursor
+		}
 		if cursor < end {
 			start := cursor - base
 			out := append([]InboxEvent{}, events[start:]...)
@@ -891,6 +1110,7 @@ func (s *Store) Ack(input AckInput) error {
 	from := m.State
 	if status == "rejected" {
 		m.State = StateRejected
+		m.TerminalAt = now
 	} else {
 		m.State = StateExecuting
 	}
@@ -983,6 +1203,7 @@ func (s *Store) PostEvent(input EventInput) error {
 	case "final":
 		from := m.State
 		m.State = StateCompleted
+		m.TerminalAt = now
 		s.publishLocked(
 			ObserveStateChange,
 			map[string]any{
@@ -1000,6 +1221,7 @@ func (s *Store) PostEvent(input EventInput) error {
 	case "error":
 		from := m.State
 		m.State = StateError
+		m.TerminalAt = now
 		s.publishLocked(
 			ObserveStateChange,
 			map[string]any{
@@ -1096,6 +1318,9 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 		}
 	}
 
+	if isTerminal(m.State) {
+		m.TerminalAt = now
+	}
 	s.messages[mid] = m
 	s.conversationMessages[conv.ConversationID] = append(s.conversationMessages[conv.ConversationID], mid)
 	conv.MessageCount = len(s.conversationMessages[conv.ConversationID])

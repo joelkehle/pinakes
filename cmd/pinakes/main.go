@@ -6,12 +6,47 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joelkehle/pinakes/pkg/bus"
 	"github.com/joelkehle/pinakes/pkg/httpapi"
 )
+
+// envSeconds parses an integer-seconds env var into a duration. Unset or
+// invalid returns 0 (use the store default); negative values disable the knob.
+func envSeconds(name string) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("WARN ignoring invalid %s=%q", name, raw)
+		return 0
+	}
+	if v < 0 {
+		return -1
+	}
+	return time.Duration(v) * time.Second
+}
+
+func envInt(name string) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("WARN ignoring invalid %s=%q", name, raw)
+		return 0
+	}
+	if v < 0 {
+		return -1
+	}
+	return v
+}
 
 func main() {
 	dbFlag := flag.String("db", "", "path to SQLite database file (overrides DB_PATH env var)")
@@ -34,6 +69,14 @@ func main() {
 		PushBaseBackoff:        500 * time.Millisecond,
 		MaxInboxEventsPerAgent: 10000,
 		MaxObserveEvents:       50000,
+		// Retention/byte-budget knobs default inside bus.NewStore; envs
+		// override. Set a *_SECONDS env to -1 to disable that knob.
+		MessageRetention:      envSeconds("MESSAGE_RETENTION_SECONDS"),
+		MessageMaxAge:         envSeconds("MESSAGE_MAX_AGE_SECONDS"),
+		ConversationRetention: envSeconds("CONVERSATION_RETENTION_SECONDS"),
+		AgentRetention:        envSeconds("AGENT_RETENTION_SECONDS"),
+		MaxInboxBytesPerAgent: envInt("MAX_INBOX_BYTES_PER_AGENT"),
+		MaxObserveBytes:       envInt("MAX_OBSERVE_BYTES"),
 	}
 
 	// Resolve DB path: --db flag > DB_PATH env > empty (use legacy backend).

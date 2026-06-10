@@ -108,6 +108,7 @@ type Message struct {
 	Attachments    []Attachment `json:"attachments,omitempty"`
 	State          MessageState `json:"state,omitempty"`
 	CreatedAt      time.Time    `json:"created_at"`
+	TerminalAt     time.Time    `json:"terminal_at,omitempty"`
 	DeliveredAt    time.Time    `json:"-"`
 	LastProgressAt time.Time    `json:"-"`
 	TTLExpiresAt   time.Time    `json:"-"`
@@ -133,6 +134,9 @@ type ObserveEvent struct {
 	Data           any       `json:"data"`
 	ConversationID string    `json:"-"`
 	AgentIDs       []string  `json:"-"`
+	// Size is the approximate retained bytes of this event, used by the
+	// observe byte budget. Recomputed on state reload (not serialized).
+	Size int `json:"-"`
 }
 
 type RegisterAgentInput struct {

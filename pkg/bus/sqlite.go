@@ -22,6 +22,10 @@ type SQLiteStore struct {
 	db    *sqlx.DB
 	mu    sync.Mutex
 
+	// pruneStop terminates the background DB-prune goroutine on Close.
+	pruneStop chan struct{}
+	pruneOnce sync.Once
+
 	// testHookBeforeCommit, if non-nil, is invoked inside persistAfterSend
 	// and CreateConversation's transaction right before Commit. Returning a
 	// non-nil error forces a rollback so tests can prove all-or-nothing
@@ -72,6 +76,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	attachments      TEXT NOT NULL DEFAULT '[]',
 	state            TEXT NOT NULL DEFAULT 'pending',
 	created_at       TEXT NOT NULL,
+	terminal_at      TEXT NOT NULL DEFAULT '',
 	delivered_at     TEXT NOT NULL DEFAULT '',
 	last_progress_at TEXT NOT NULL DEFAULT '',
 	ttl_expires_at   TEXT NOT NULL DEFAULT '',
@@ -107,11 +112,23 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate agent schema: %w", err)
 	}
+	if err := ensureMessageColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate message schema: %w", err)
+	}
 
 	inner := NewStore(cfg)
 	s := &SQLiteStore{
-		inner: inner,
-		db:    db,
+		inner:     inner,
+		db:        db,
+		pruneStop: make(chan struct{}),
+	}
+
+	// Prune before loading so a DB that grew past retention while the bus was
+	// down (or before retention existed) cannot re-inflate memory on restart.
+	if err := s.pruneDB(inner.now()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("prune state: %w", err)
 	}
 
 	if err := s.loadAll(); err != nil {
@@ -119,7 +136,61 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 
+	go s.pruneLoop()
+
 	return s, nil
+}
+
+// pruneLoop mirrors the in-memory retention sweep into SQLite so the DB stays
+// bounded too. The in-memory store prunes itself; this only deletes rows.
+func (s *SQLiteStore) pruneLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.pruneStop:
+			return
+		case <-ticker.C:
+			_ = s.pruneDB(s.inner.now())
+		}
+	}
+}
+
+// pruneDB deletes rows past retention. RFC3339 strings compare
+// lexicographically with at-most sub-second error at the cutoff, which is
+// irrelevant for hour-scale retention windows.
+func (s *SQLiteStore) pruneDB(now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cfg := s.inner.cfg
+	if cfg.MessageMaxAge > 0 {
+		cutoff := timeToString(now.Add(-cfg.MessageMaxAge))
+		if _, err := s.db.Exec(`DELETE FROM messages WHERE created_at <> '' AND created_at < ?`, cutoff); err != nil {
+			return err
+		}
+	}
+	if cfg.MessageRetention > 0 {
+		cutoff := timeToString(now.Add(-cfg.MessageRetention))
+		if _, err := s.db.Exec(`DELETE FROM messages
+			WHERE state IN ('completed', 'rejected', 'error')
+			AND (CASE WHEN terminal_at <> '' THEN terminal_at ELSE created_at END) < ?`, cutoff); err != nil {
+			return err
+		}
+	}
+	if cfg.ConversationRetention > 0 {
+		cutoff := timeToString(now.Add(-cfg.ConversationRetention))
+		if _, err := s.db.Exec(`DELETE FROM conversations
+			WHERE last_message_at <> '' AND last_message_at < ?
+			AND conversation_id NOT IN (SELECT DISTINCT conversation_id FROM messages)`, cutoff); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`DELETE FROM conversation_messages
+		WHERE message_id NOT IN (SELECT message_id FROM messages)`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureAgentColumns(db *sqlx.DB) error {
@@ -170,7 +241,42 @@ func ensureAgentColumns(db *sqlx.DB) error {
 	return nil
 }
 
+func ensureMessageColumns(db *sqlx.DB) error {
+	rows, err := db.Query("PRAGMA table_info(messages)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	cols := map[string]struct{}{}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			typ        string
+			notNull    int
+			defaultV   sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultV, &primaryKey); err != nil {
+			return err
+		}
+		cols[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if _, ok := cols["terminal_at"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN terminal_at TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *SQLiteStore) Close() error {
+	s.pruneOnce.Do(func() { close(s.pruneStop) })
 	return s.db.Close()
 }
 
@@ -277,7 +383,7 @@ func (s *SQLiteStore) loadConversations() error {
 func (s *SQLiteStore) loadMessages() error {
 	rows, err := s.db.Query(`SELECT message_id, type, from_agent, to_agent, conversation_id,
 		request_id, in_reply_to, body, meta, attachments, state,
-		created_at, delivered_at, last_progress_at, ttl_expires_at, grace_until, queued_for_agent
+		created_at, terminal_at, delivered_at, last_progress_at, ttl_expires_at, grace_until, queued_for_agent
 		FROM messages`)
 	if err != nil {
 		return err
@@ -287,12 +393,15 @@ func (s *SQLiteStore) loadMessages() error {
 		var m Message
 		var metaJSON sql.NullString
 		var attachmentsJSON string
-		var createdAt, deliveredAt, lastProgressAt, ttlExpiresAt, graceUntil string
+		var createdAt, terminalAt, deliveredAt, lastProgressAt, ttlExpiresAt, graceUntil string
 		var queued int
 		if err := rows.Scan(&m.MessageID, &m.Type, &m.From, &m.To, &m.ConversationID,
 			&m.RequestID, &m.InReplyTo, &m.Body, &metaJSON, &attachmentsJSON, &m.State,
-			&createdAt, &deliveredAt, &lastProgressAt, &ttlExpiresAt, &graceUntil, &queued); err != nil {
+			&createdAt, &terminalAt, &deliveredAt, &lastProgressAt, &ttlExpiresAt, &graceUntil, &queued); err != nil {
 			return err
+		}
+		if terminalAt != "" {
+			m.TerminalAt, _ = time.Parse(time.RFC3339Nano, terminalAt)
 		}
 		if metaJSON.Valid && metaJSON.String != "" {
 			_ = json.Unmarshal([]byte(metaJSON.String), &m.Meta)
@@ -432,8 +541,8 @@ func (s *SQLiteStore) saveConversation(c *Conversation) error {
 func saveMessageTo(exec sqliteExec, m *Message) error {
 	_, err := exec.Exec(`INSERT OR REPLACE INTO messages (message_id, type, from_agent, to_agent, conversation_id,
 		request_id, in_reply_to, body, meta, attachments, state,
-		created_at, delivered_at, last_progress_at, ttl_expires_at, grace_until, queued_for_agent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		created_at, terminal_at, delivered_at, last_progress_at, ttl_expires_at, grace_until, queued_for_agent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.MessageID,
 		string(m.Type),
 		m.From,
@@ -446,6 +555,7 @@ func saveMessageTo(exec sqliteExec, m *Message) error {
 		marshalJSON(m.Attachments),
 		string(m.State),
 		timeToString(m.CreatedAt),
+		timeToString(m.TerminalAt),
 		timeToString(m.DeliveredAt),
 		timeToString(m.LastProgressAt),
 		timeToString(m.TTLExpiresAt),

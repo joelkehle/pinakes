@@ -9,6 +9,41 @@ import (
 	"time"
 )
 
+// persistedMessage carries the Message fields that are hidden from API
+// responses (json:"-") but must survive a restart: without them, in-flight
+// messages reload with zero TTL/ack deadlines and the sweep state machine
+// cannot expire them. Older state files lack these keys and load as zero,
+// matching pre-fix behavior.
+type persistedMessage struct {
+	Message
+	DeliveredAt    time.Time `json:"delivered_at,omitempty"`
+	LastProgressAt time.Time `json:"last_progress_at,omitempty"`
+	TTLExpiresAt   time.Time `json:"ttl_expires_at,omitempty"`
+	GraceUntil     time.Time `json:"grace_until,omitempty"`
+	QueuedForAgent bool      `json:"queued_for_agent,omitempty"`
+}
+
+func toPersistedMessage(m Message) persistedMessage {
+	return persistedMessage{
+		Message:        m,
+		DeliveredAt:    m.DeliveredAt,
+		LastProgressAt: m.LastProgressAt,
+		TTLExpiresAt:   m.TTLExpiresAt,
+		GraceUntil:     m.GraceUntil,
+		QueuedForAgent: m.QueuedForAgent,
+	}
+}
+
+func (pm persistedMessage) toMessage() Message {
+	m := pm.Message
+	m.DeliveredAt = pm.DeliveredAt
+	m.LastProgressAt = pm.LastProgressAt
+	m.TTLExpiresAt = pm.TTLExpiresAt
+	m.GraceUntil = pm.GraceUntil
+	m.QueuedForAgent = pm.QueuedForAgent
+	return m
+}
+
 type persistentState struct {
 	NextConversationID   int64                       `json:"next_conversation_id"`
 	NextMessageID        int64                       `json:"next_message_id"`
@@ -18,7 +53,7 @@ type persistentState struct {
 	Agents               map[string]Agent            `json:"agents"`
 	AgentSecrets         map[string]string           `json:"agent_secrets,omitempty"`
 	Conversations        map[string]Conversation     `json:"conversations"`
-	Messages             map[string]Message          `json:"messages"`
+	Messages             map[string]persistedMessage `json:"messages"`
 	ConversationMessages map[string][]string         `json:"conversation_messages"`
 	Inboxes              map[string][]InboxEvent     `json:"inboxes"`
 	InboxBase            map[string]int              `json:"inbox_base"`
@@ -60,7 +95,7 @@ func (p *PersistentStore) stateSnapshot() persistentState {
 		Agents:               map[string]Agent{},
 		AgentSecrets:         map[string]string{},
 		Conversations:        map[string]Conversation{},
-		Messages:             map[string]Message{},
+		Messages:             map[string]persistedMessage{},
 		ConversationMessages: map[string][]string{},
 		Inboxes:              map[string][]InboxEvent{},
 		InboxBase:            map[string]int{},
@@ -79,8 +114,7 @@ func (p *PersistentStore) stateSnapshot() persistentState {
 		state.Conversations[k] = cp
 	}
 	for k, v := range p.inner.messages {
-		cp := *v
-		state.Messages[k] = cp
+		state.Messages[k] = toPersistedMessage(*v)
 	}
 	for k, v := range p.inner.conversationMessages {
 		state.ConversationMessages[k] = append([]string{}, v...)
@@ -127,7 +161,7 @@ func (p *PersistentStore) applyState(state persistentState) {
 	}
 	p.inner.messages = map[string]*Message{}
 	for k, v := range state.Messages {
-		cp := v
+		cp := v.toMessage()
 		p.inner.messages[k] = &cp
 	}
 	p.inner.conversationMessages = map[string][]string{}
@@ -135,14 +169,25 @@ func (p *PersistentStore) applyState(state persistentState) {
 		p.inner.conversationMessages[k] = append([]string{}, v...)
 	}
 	p.inner.inboxes = map[string][]InboxEvent{}
+	p.inner.inboxBytes = map[string]int{}
 	for k, v := range state.Inboxes {
 		p.inner.inboxes[k] = append([]InboxEvent{}, v...)
+		bytes := 0
+		for _, evt := range v {
+			bytes += inboxEventSize(evt)
+		}
+		p.inner.inboxBytes[k] = bytes
 	}
 	p.inner.inboxBase = map[string]int{}
 	for k, v := range state.InboxBase {
 		p.inner.inboxBase[k] = v
 	}
 	p.inner.observeEvents = append([]ObserveEvent{}, state.ObserveEvents...)
+	p.inner.observeBytes = 0
+	for i := range p.inner.observeEvents {
+		p.inner.observeEvents[i].Size = observeEventSize(p.inner.observeEvents[i])
+		p.inner.observeBytes += p.inner.observeEvents[i].Size
+	}
 	p.inner.idempotency = map[string]idempotencyEntry{}
 	for k, v := range state.Idempotency {
 		p.inner.idempotency[k] = v
@@ -156,8 +201,10 @@ func (p *PersistentStore) persist() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Compact marshal: indentation inflated the blob ~40% and doubled the
+	// transient allocation on a path that runs after every mutation.
 	state := p.stateSnapshot()
-	blob, err := json.MarshalIndent(state, "", "  ")
+	blob, err := json.Marshal(state)
 	if err != nil {
 		p.lastPersistErr = err.Error()
 		return err
@@ -240,9 +287,7 @@ func (p *PersistentStore) RegisterAgent(input RegisterAgentInput) (*Agent, error
 }
 
 func (p *PersistentStore) ListAgents(capability string) []Agent {
-	out := p.inner.ListAgents(capability)
-	p.persistBestEffort()
-	return out
+	return p.inner.ListAgents(capability)
 }
 
 func (p *PersistentStore) CreateConversation(input CreateConversationInput) (*Conversation, error) {
@@ -256,9 +301,7 @@ func (p *PersistentStore) CreateConversation(input CreateConversationInput) (*Co
 }
 
 func (p *PersistentStore) ListConversations(filter ListConversationsFilter) []Conversation {
-	out := p.inner.ListConversations(filter)
-	p.persistBestEffort()
-	return out
+	return p.inner.ListConversations(filter)
 }
 
 func (p *PersistentStore) SendMessage(input SendMessageInput) (*Message, bool, error) {
@@ -271,9 +314,15 @@ func (p *PersistentStore) SendMessage(input SendMessageInput) (*Message, bool, e
 	return m, dup, err
 }
 
+// PollInbox persists only when events were delivered: idle long-polls
+// previously re-serialized the entire state every wake, which dominated CPU
+// and transient memory. Poll-time inbox reclamation that goes unpersisted is
+// harmless — it re-runs on the next poll after a reload.
 func (p *PersistentStore) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 	events, cursor, err := p.inner.PollInbox(input)
-	p.persistBestEffort()
+	if err == nil && len(events) > 0 {
+		p.persistBestEffort()
+	}
 	return events, cursor, err
 }
 
@@ -308,39 +357,37 @@ func (p *PersistentStore) Inject(input InjectInput) (*Message, error) {
 }
 
 func (p *PersistentStore) ListConversationMessages(input ListConversationMessagesInput) (string, []Message, int, error) {
-	cid, messages, cursor, err := p.inner.ListConversationMessages(input)
-	p.persistBestEffort()
-	return cid, messages, cursor, err
+	return p.inner.ListConversationMessages(input)
 }
 
 func (p *PersistentStore) ObserveSince(afterID int64, filter ObserveFilter, wait time.Duration) ([]ObserveEvent, int64) {
-	events, last := p.inner.ObserveSince(afterID, filter, wait)
-	p.persistBestEffort()
-	return events, last
+	return p.inner.ObserveSince(afterID, filter, wait)
 }
 
 func (p *PersistentStore) Health() map[string]any {
 	out := p.inner.Health()
-	p.persistBestEffort()
-	if p.lastPersistErr != "" {
-		out["persist_error"] = p.lastPersistErr
+	if msg := p.lastPersistError(); msg != "" {
+		out["persist_error"] = msg
 	}
 	return out
 }
 
 func (p *PersistentStore) Metrics() string {
-	out := p.inner.Metrics()
-	p.persistBestEffort()
-	return out
+	return p.inner.Metrics()
 }
 
 func (p *PersistentStore) SystemStatus() map[string]any {
 	out := p.inner.SystemStatus()
-	p.persistBestEffort()
-	if p.lastPersistErr != "" {
-		out["persist_error"] = p.lastPersistErr
+	if msg := p.lastPersistError(); msg != "" {
+		out["persist_error"] = msg
 	}
 	return out
+}
+
+func (p *PersistentStore) lastPersistError() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastPersistErr
 }
 
 var _ AgentSecretStore = (*PersistentStore)(nil)

@@ -132,16 +132,20 @@ func TestPersistentStoreReadSweepPersist(t *testing.T) {
 	current = current.Add(5 * time.Second)
 	_ = store.ListAgents("")
 
+	// Reads no longer snapshot state to disk; instead the TTL deadline itself
+	// is persisted (it used to be dropped by json:"-"), so the sweep
+	// re-derives the expiry after a restart.
 	restored, err := NewPersistentStore(statePath, cfg)
 	if err != nil {
 		t.Fatalf("reopen persistent store for read sweep test: %v", err)
 	}
+	_ = restored.ListAgents("")
 	restoredMsg, ok := restored.inner.GetMessageForTest(msg.MessageID)
 	if !ok {
 		t.Fatalf("message %s missing after reopen", msg.MessageID)
 	}
 	if restoredMsg.State != StateError {
-		t.Fatalf("expected message in error state after sweep persistence, got %s", restoredMsg.State)
+		t.Fatalf("expected message in error state after sweep on reload, got %s", restoredMsg.State)
 	}
 }
 

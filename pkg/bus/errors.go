@@ -12,8 +12,11 @@ const (
 	CodeRejected     = "rejected"
 	CodeRateLimited  = "rate_limited"
 	CodeUnavailable  = "unavailable"
-	CodeTimeout      = "timeout"
-	CodeInternal     = "internal"
+	// CodePayloadTooLarge maps to HTTP 413; returned when a request body
+	// exceeds the configured MAX_BODY_BYTES cap.
+	CodePayloadTooLarge = "payload_too_large"
+	CodeTimeout         = "timeout"
+	CodeInternal        = "internal"
 )
 
 type Error struct {
@@ -40,6 +43,8 @@ func statusForCode(code string) int {
 		return 409
 	case CodeRateLimited:
 		return 429
+	case CodePayloadTooLarge:
+		return 413
 	case CodeTimeout:
 		return 408
 	case CodeUnavailable:

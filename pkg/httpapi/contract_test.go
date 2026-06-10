@@ -1062,3 +1062,39 @@ func TestBusConfigSurfaceDocumented(t *testing.T) {
 		}
 	}
 }
+
+// TestContractBodySizeCap pins the 413 payload_too_large behavior: unbounded
+// request bodies let a single publish blow the bus past its container memory
+// limit.
+func TestContractBodySizeCap(t *testing.T) {
+	ts := httptest.NewServer(newContractServerWithEnv(t, map[string]string{
+		"MAX_BODY_BYTES": "256",
+	}))
+	defer ts.Close()
+	c := ts.Client()
+
+	big := strings.Repeat("x", 1024)
+	resp := doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", map[string]any{
+		"to": "b", "from": "a", "request_id": "r-big", "body": big,
+	}, nil)
+	blob := mustStatus(t, resp, 413)
+	var payload struct {
+		OK    bool `json:"ok"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(blob, &payload); err != nil {
+		t.Fatalf("unmarshal 413 body: %v", err)
+	}
+	if payload.OK || payload.Error.Code != "payload_too_large" {
+		t.Fatalf("expected payload_too_large error, got %s", string(blob))
+	}
+
+	// Within the cap, requests proceed to normal auth/validation handling
+	// (401 here because the sender is unregistered), not 413.
+	resp = doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", map[string]any{
+		"to": "b", "from": "a", "request_id": "r-small", "body": "ok",
+	}, nil)
+	mustStatus(t, resp, 401)
+}

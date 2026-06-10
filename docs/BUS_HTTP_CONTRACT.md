@@ -204,6 +204,28 @@ This doc describes the extracted bus contract as implemented by:
   - comma-separated bearer tokens for `/v1/observe`
   - `Authorization: Bearer <token>` is preferred; `?token=<token>` exists only for SSE clients that cannot set headers
   - empty/unset means token-authenticated observe fails closed; agent HMAC observe remains available
+- `MAX_BODY_BYTES`
+  - maximum request body size in bytes for all POST endpoints
+  - default: `2097152` (2 MiB); `0` or negative disables the cap
+  - oversized bodies return `413` with error code `payload_too_large`
+- `MESSAGE_RETENTION_SECONDS`
+  - prune terminal (completed/rejected/error) messages this long after they reach a terminal state
+  - default: `3600` (1h); `-1` disables
+- `MESSAGE_MAX_AGE_SECONDS`
+  - prune any message this long after creation regardless of state (backstop for stuck/legacy messages)
+  - default: `86400` (24h); `-1` disables
+- `CONVERSATION_RETENTION_SECONDS`
+  - prune conversations idle this long once all their messages are pruned
+  - default: `86400` (24h); `-1` disables
+- `AGENT_RETENTION_SECONDS`
+  - prune expired agents (and their inboxes) this long after registration expiry; returning agents re-register normally
+  - default: `86400` (24h); `-1` disables
+- `MAX_INBOX_BYTES_PER_AGENT`
+  - approximate retained payload byte budget per agent inbox; oldest events evicted first, newest always kept
+  - default: `33554432` (32 MiB); `-1` disables
+- `MAX_OBSERVE_BYTES`
+  - approximate retained payload byte budget for the observe event ring; oldest events evicted first, newest always kept
+  - default: `67108864` (64 MiB); `-1` disables
 
 ### Store selection order
 
@@ -228,11 +250,29 @@ These values are currently hard-coded in [main.go](/home/joelkehle/Projects/shar
 - `MaxInboxEventsPerAgent = 10000`
 - `MaxObserveEvents = 50000`
 - `SweepMinInterval = 250ms` — minimum gap between full sweep passes. The bus skips redundant sweeps inside this window so long-poll cycles do not re-walk hundreds of thousands of retained messages on every wake. The first sweep after process start always runs; agent expiry, TTL expiry, and ack-timeout transitions land within one `SweepMinInterval` of their deadline.
+- `MessageRetention = 1h`, `MessageMaxAge = 24h`, `ConversationRetention = 24h`, `AgentRetention = 24h`, `MaxInboxBytesPerAgent = 32MiB`, `MaxObserveBytes = 64MiB`, `MaxBodyBytes = 2MiB` — memory-reclamation knobs, env-overridable (see Environment variables above).
 
 Important current behavior:
 
-- these tunables are not externally configurable via env vars today
+- the non-retention tunables are not externally configurable via env vars today
 - extraction should preserve them unless a deliberate compatibility change is called out
+
+## Retention And Memory Reclamation
+
+The bus is in-memory at runtime; without eviction its memory grows without bound and the container gets OOM-killed (observed 2026-06-09/10). Reclamation works on four levers, all sweep-driven:
+
+- **Terminal messages** are pruned `MessageRetention` after reaching a terminal state. `terminal_at` is stamped on the message (additive response field) and persisted in both durable backends. Messages from pre-retention state files (no `terminal_at`) fall back to `created_at` and drain promptly after upgrade.
+- **Any message** is pruned `MessageMaxAge` after creation regardless of state — backstop for stuck or legacy-loaded messages.
+- **Conversations** are pruned once idle past `ConversationRetention` with no live messages. `GET /v1/conversations/{id}/messages` only ever returns retained messages.
+- **Expired agents** and their inboxes are pruned `AgentRetention` after registration expiry. A pruned agent simply re-registers (its `registered_at` resets).
+
+Inbox and observe buffers are additionally bounded by byte budgets (`MaxInboxBytesPerAgent`, `MaxObserveBytes`), evicting oldest-first but never the newest event. Counts alone do not bound memory when individual payloads are large.
+
+Inbox poll-time reclamation: cursor values originate from prior poll responses, so a poll at cursor `C` proves the agent received every event below `C`; the bus frees those events immediately. Clients must not rely on re-reading inbox events below their last-acknowledged cursor (this was already unreliable under the count cap).
+
+Idempotency caveat: replaying a `request_id` after the original message has been pruned (i.e. more than `MessageRetention` after completion) creates a new message instead of returning the duplicate. The previous behavior held the duplicate for the full 24h `IdempotencyWindow`; retries on that timescale are not a supported pattern.
+
+The SQLite backend mirrors retention into the database: rows past retention are deleted at startup (before load, so a bloated DB cannot re-inflate memory) and every 10 minutes thereafter. The JSON backend rewrites the full pruned state on mutations.
 
 ## Passport Extensions
 
