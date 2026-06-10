@@ -329,6 +329,114 @@ func TestContractListAgentsDoesNotLeakSecrets(t *testing.T) {
 	}
 }
 
+func TestContractReregistrationRejectsSecretHijack(t *testing.T) {
+	ts := httptest.NewServer(newContractServer())
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+	}, nil), http.StatusOK)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+	}, nil), http.StatusOK)
+
+	conflict := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "attacker-secret",
+	}, nil), http.StatusConflict)
+	if !bytes.Contains(conflict, []byte("re-registration requires proof of current secret")) {
+		t.Fatalf("unexpected conflict response: %s", string(conflict))
+	}
+
+	sendReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-hijack-old", "type": "request", "body": "old secret still works"}
+	sendBlob, _ := json.Marshal(sendReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq, map[string]string{
+		"X-Bus-Signature": signPayload("secret-a", sendBlob),
+	}), http.StatusOK)
+
+	badReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-hijack-new", "type": "request", "body": "new secret must fail"}
+	badBlob, _ := json.Marshal(badReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", badReq, map[string]string{
+		"X-Bus-Signature": signPayload("attacker-secret", badBlob),
+	}), http.StatusUnauthorized)
+}
+
+func TestContractReregistrationRotationRequiresOldSecretSignature(t *testing.T) {
+	ts := httptest.NewServer(newContractServer())
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+	}, nil), http.StatusOK)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+	}, nil), http.StatusOK)
+
+	rotateReq := map[string]any{"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a-rotated"}
+	rotateBlob, _ := json.Marshal(rotateReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", rotateReq, map[string]string{
+		"X-Bus-Signature": signPayload("secret-a", rotateBlob),
+	}), http.StatusOK)
+
+	oldReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-rotation-old", "type": "request", "body": "old secret rejected"}
+	oldBlob, _ := json.Marshal(oldReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", oldReq, map[string]string{
+		"X-Bus-Signature": signPayload("secret-a", oldBlob),
+	}), http.StatusUnauthorized)
+
+	newReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-rotation-new", "type": "request", "body": "new secret works"}
+	newBlob, _ := json.Marshal(newReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", newReq, map[string]string{
+		"X-Bus-Signature": signPayload("secret-a-rotated", newBlob),
+	}), http.StatusOK)
+}
+
+func TestContractReregistrationSameSecretStillIdempotent(t *testing.T) {
+	ts := httptest.NewServer(newContractServer())
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-a", "version": "v1",
+	}, nil), http.StatusOK)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-a", "version": "v2",
+	}, nil), http.StatusOK)
+
+	body := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/agents", nil, nil), http.StatusOK)
+	if !bytes.Contains(body, []byte(`"version":"v2"`)) {
+		t.Fatalf("expected idempotent re-registration to update fields: %s", string(body))
+	}
+}
+
+func TestContractLegacyEmptySecretReregistrationGrace(t *testing.T) {
+	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
+	store := bus.NewStore(contractConfig(now))
+	if _, err := store.RegisterAgent(bus.RegisterAgentInput{AgentID: "legacy", Mode: bus.AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+		t.Fatalf("seed legacy agent: %v", err)
+	}
+	ts := httptest.NewServer(NewServer(store))
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "legacy", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-legacy",
+	}, nil), http.StatusOK)
+}
+
 func TestContractPassportRegistrationRoundTrip(t *testing.T) {
 	ts := httptest.NewServer(newContractServer())
 	defer func() {
@@ -458,8 +566,8 @@ func TestContractPassportReregistrationUpdatesFields(t *testing.T) {
 		Transport: &http.Transport{DisableKeepAlives: true},
 	}
 
-	register := func(version, description, mutationClass, commit string, dirty bool) {
-		mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+	register := func(version, description, mutationClass, commit string, dirty bool, signReregistration bool) {
+		body := map[string]any{
 			"agent_id":       "passport",
 			"mode":           "pull",
 			"capabilities":   []string{"x"},
@@ -472,11 +580,17 @@ func TestContractPassportReregistrationUpdatesFields(t *testing.T) {
 				"commit": commit,
 				"dirty":  dirty,
 			},
-		}, nil), http.StatusOK)
+		}
+		headers := map[string]string(nil)
+		if signReregistration {
+			blob, _ := json.Marshal(body)
+			headers = map[string]string{"X-Bus-Signature": signPayload("secret-passport", blob)}
+		}
+		mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", body, headers), http.StatusOK)
 	}
 
-	register("v0.5.0", "first", "observe", "abc1234", false)
-	register("v0.5.1", "second", "recommend", "def5678", true)
+	register("v0.5.0", "first", "observe", "abc1234", false, false)
+	register("v0.5.1", "second", "recommend", "def5678", true, true)
 
 	body := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/agents", nil, nil), http.StatusOK)
 	var resp struct {

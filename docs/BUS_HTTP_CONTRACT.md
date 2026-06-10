@@ -8,7 +8,7 @@ read_when:
 
 # Bus HTTP Contract
 
-Last updated: 2026-03-31
+Last updated: 2026-06-10
 
 Purpose: preserve the extracted bus surface in `pinakes`.
 
@@ -137,11 +137,22 @@ This doc describes the extracted bus contract as implemented by:
 - Agent registration requires a non-empty `secret`.
 - Agent registration is gated by `ALLOWLIST_FILE` if set, otherwise `AGENT_ALLOWLIST`.
 - Removing an agent from the allowlist blocks future registration only; it does not evict already-registered agents mid-session.
+- Agent registration secrets are persisted in the active durable agent store so a bus restart does not force re-registration before signed endpoints work.
+- Re-registration with the same secret is idempotent and may update passport metadata.
+- Re-registration with a different secret requires `X-Bus-Signature` over the raw registration body using the current stored secret. Missing or invalid proof returns `409 Conflict` with `re-registration requires proof of current secret`.
+- Legacy rows with no stored secret may establish one secret after the allowlist check.
 - Message send auth uses the `from` agent secret.
 - Inbox poll auth uses the exact raw query string.
 - Ack auth uses the `agent_id` secret.
 - Event auth uses `X-Agent-ID` + that agent's secret.
 - Human inject is gated by `HUMAN_ALLOWLIST` if set.
+
+## Secret Persistence And Recovery
+
+- SQLite stores the raw HMAC secret in `agents.secret`.
+- The JSON persistent backend stores raw HMAC secrets in `agent_secrets`.
+- Secrets are never included in `GET /v1/agents` responses or status/debug output.
+- Operator recovery for a genuinely lost agent secret is manual store repair: delete that agent row from SQLite (`DELETE FROM agents WHERE agent_id=?`) or remove the agent and secret entries from the JSON state file, then let the agent re-register.
 
 ## Runtime Config Surface
 

@@ -373,6 +373,10 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 		writeBusError(w, &bus.Error{Code: bus.CodeValidation, Message: "secret is required", Status: 400})
 		return
 	}
+	if err := s.verifyReregistrationProof(req.AgentID, req.Secret, blob, r.Header.Get("X-Bus-Signature")); err != nil {
+		writeBusError(w, err)
+		return
+	}
 
 	agent, err := s.store.RegisterAgent(bus.RegisterAgentInput{
 		AgentID:       req.AgentID,
