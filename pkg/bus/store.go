@@ -35,6 +35,14 @@ type Config struct {
 	DefaultRegistrationTTL time.Duration
 	PushMaxAttempts        int
 	PushBaseBackoff        time.Duration
+	// PushQueueSize bounds the buffered queue of pending push callbacks.
+	// When the queue is full new deliveries are dropped (logged and counted
+	// as push failures) instead of blocking the API path or spawning
+	// per-job goroutines. Defaults to 256.
+	PushQueueSize int
+	// PushWorkers is the fixed number of goroutines draining the push
+	// queue. Defaults to 4.
+	PushWorkers            int
 	MaxInboxEventsPerAgent int
 	MaxObserveEvents       int
 	// MaxInboxBytesPerAgent bounds the approximate retained payload bytes per
@@ -71,6 +79,12 @@ type Config struct {
 type idempotencyEntry struct {
 	MessageID string
 	CreatedAt time.Time
+}
+
+// pushJob is one push-callback delivery handed to the worker pool.
+type pushJob struct {
+	url     string
+	payload map[string]any
 }
 
 type Store struct {
@@ -116,6 +130,10 @@ type Store struct {
 	logger         *log.Logger
 	pushFailures   int64
 	pushSuccesses  int64
+
+	// pushQueue feeds the fixed pool of push workers. Bounded so a burst of
+	// sends to a dead push agent cannot pile up unbounded goroutines.
+	pushQueue chan pushJob
 }
 
 func NewStore(cfg Config) *Store {
@@ -145,6 +163,12 @@ func NewStore(cfg Config) *Store {
 	}
 	if cfg.PushBaseBackoff <= 0 {
 		cfg.PushBaseBackoff = 500 * time.Millisecond
+	}
+	if cfg.PushQueueSize <= 0 {
+		cfg.PushQueueSize = 256
+	}
+	if cfg.PushWorkers <= 0 {
+		cfg.PushWorkers = 4
 	}
 	if cfg.MaxInboxEventsPerAgent <= 0 {
 		cfg.MaxInboxEventsPerAgent = 10000
@@ -206,7 +230,7 @@ func NewStore(cfg Config) *Store {
 		}
 	}
 
-	return &Store{
+	s := &Store{
 		cfg:                  cfg,
 		agents:               map[string]*Agent{},
 		conversations:        map[string]*Conversation{},
@@ -223,8 +247,22 @@ func NewStore(cfg Config) *Store {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger: log.New(os.Stdout, "pinakes ", log.LstdFlags),
+		logger:    log.New(os.Stdout, "pinakes ", log.LstdFlags),
+		pushQueue: make(chan pushJob, cfg.PushQueueSize),
 	}
+
+	// Push workers are daemon goroutines for the life of the process. Store
+	// has no Close, so they are never shut down; that is accepted — they are
+	// a fixed pool, not per-job spawns.
+	for i := 0; i < cfg.PushWorkers; i++ {
+		go func() {
+			for job := range s.pushQueue {
+				s.sendPushCallback(job.url, job.payload)
+			}
+		}()
+	}
+
+	return s
 }
 
 func (s *Store) now() time.Time {
@@ -401,6 +439,20 @@ func (s *Store) trimObserveLocked() {
 		s.observeBytes -= events[i].Size
 	}
 	s.observeEvents = append([]ObserveEvent{}, events[drop:]...)
+}
+
+// enqueuePushLocked hands a push delivery to the worker pool without ever
+// blocking the API path. On a full queue the job is dropped, logged, and
+// counted as a push failure. Caller must hold s.mu (both call sites enqueue
+// inside their critical section), which is why the drop path increments
+// pushFailures directly instead of re-locking.
+func (s *Store) enqueuePushLocked(url string, payload map[string]any) {
+	select {
+	case s.pushQueue <- pushJob{url: url, payload: payload}:
+	default:
+		s.logger.Printf("WARN push queue full, dropping delivery url=%s", url)
+		s.pushFailures++
+	}
 }
 
 func (s *Store) sendPushCallback(url string, payload map[string]any) {
@@ -983,7 +1035,7 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 	)
 
 	if pushCallbackURL != "" && pushPayload != nil {
-		go s.sendPushCallback(pushCallbackURL, pushPayload)
+		s.enqueuePushLocked(pushCallbackURL, pushPayload)
 	}
 
 	cp := *m
@@ -1357,7 +1409,7 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 	)
 
 	if pushCallbackURL != "" && pushPayload != nil {
-		go s.sendPushCallback(pushCallbackURL, pushPayload)
+		s.enqueuePushLocked(pushCallbackURL, pushPayload)
 	}
 
 	cp := *m
