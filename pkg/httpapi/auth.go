@@ -84,7 +84,7 @@ func (s *Server) verifyReregistrationProof(agentID, offeredSecret string, payloa
 		// are allowed to establish a secret after the allowlist check.
 		return nil
 	}
-	if strings.TrimSpace(currentSecret) == "" || currentSecret == offeredSecret {
+	if strings.TrimSpace(currentSecret) == "" || hmac.Equal([]byte(currentSecret), []byte(offeredSecret)) {
 		return nil
 	}
 	if err := s.verifySignature(agentID, signature, payload); err != nil {
