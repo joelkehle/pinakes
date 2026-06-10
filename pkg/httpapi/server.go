@@ -30,6 +30,8 @@ type Server struct {
 	mu            sync.RWMutex
 	agentSecrets  map[string]string
 	agentAllowset map[string]struct{}
+	injectTokens  map[string]struct{}
+	observeTokens map[string]struct{}
 	handler       http.Handler
 	logger        *log.Logger
 }
@@ -56,6 +58,8 @@ func NewServerFromEnv(store bus.API) (*Server, error) {
 		store:         store,
 		agentSecrets:  map[string]string{},
 		agentAllowset: allowset,
+		injectTokens:  parseTokenEnv(os.Getenv("INJECT_TOKENS")),
+		observeTokens: parseTokenEnv(os.Getenv("OBSERVE_TOKENS")),
 		logger:        log.New(os.Stdout, "pinakes ", log.LstdFlags),
 	}
 	if err := s.loadPersistedAgentSecrets(); err != nil {
@@ -423,6 +427,10 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 			writeBusError(w, bus.NewValidationJSONError(err))
 			return
 		}
+		if err := s.verifyConversationCreateAuth(r, blob); err != nil {
+			writeBusError(w, err)
+			return
+		}
 		var req struct {
 			ConversationID string   `json:"conversation_id"`
 			Title          string   `json:"title"`
@@ -664,6 +672,10 @@ func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodGet) {
 		return
 	}
+	if err := s.verifyObserveAuth(r); err != nil {
+		writeBusError(w, err)
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeBusError(w, bus.NewInternalError("streaming unsupported"))
@@ -734,6 +746,10 @@ func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodPost) {
+		return
+	}
+	if !s.validInjectToken(r) {
+		writeBusError(w, forbiddenError("inject token required"))
 		return
 	}
 	blob, err := readBody(r)

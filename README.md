@@ -42,6 +42,8 @@ Runtime config:
 - `ALLOWLIST_FILE`
 - `AGENT_ALLOWLIST`
 - `HUMAN_ALLOWLIST`
+- `INJECT_TOKENS`
+- `OBSERVE_TOKENS`
 
 Contract doc:
 

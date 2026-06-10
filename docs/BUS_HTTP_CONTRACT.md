@@ -47,6 +47,7 @@ This doc describes the extracted bus contract as implemented by:
 - `POST /v1/conversations`
   - source: `handleConversations`
   - body: `conversation_id`, `title`, `participants`, `meta`
+  - auth: `X-Agent-ID` + `X-Bus-Signature` over raw JSON body using the creator agent secret, or `Authorization: Bearer <token>` from `INJECT_TOKENS`
   - response: `ok`, `conversation_id`
 - `GET /v1/conversations`
   - source: `handleConversations`
@@ -93,11 +94,13 @@ This doc describes the extracted bus contract as implemented by:
 - `GET /v1/observe`
   - source: `handleObserve`
   - query: optional `cursor`, `conversation_id`, `agent_id`
+  - auth: `Authorization: Bearer <token>` from `OBSERVE_TOKENS`, or `?token=<token>` from `OBSERVE_TOKENS` as an SSE fallback, or `X-Agent-ID` + `X-Bus-Signature` over the exact raw query string
   - header fallback for cursor: `Last-Event-ID`
   - response: SSE stream
 - `POST /v1/inject`
   - source: `handleInject`
   - body: `identity`, `conversation_id`, `to`, `body`
+  - auth: `Authorization: Bearer <token>` from `INJECT_TOKENS`, then `HUMAN_ALLOWLIST` if configured
   - response: `ok`, `message_id`
 
 ### Health / status
@@ -145,7 +148,10 @@ This doc describes the extracted bus contract as implemented by:
 - Inbox poll auth uses the exact raw query string.
 - Ack auth uses the `agent_id` secret.
 - Event auth uses `X-Agent-ID` + that agent's secret.
-- Human inject is gated by `HUMAN_ALLOWLIST` if set.
+- Conversation creation requires agent HMAC over the raw body or a valid inject token.
+- Observe requires an observe token (header preferred, `?token=` fallback for SSE clients) or agent HMAC over the exact raw query string.
+- Human inject requires a valid inject token and is then gated by `HUMAN_ALLOWLIST` if set.
+- `INJECT_TOKENS` or `OBSERVE_TOKENS` unset means token auth fails closed for those token paths.
 
 ## Secret Persistence And Recovery
 
@@ -189,7 +195,15 @@ This doc describes the extracted bus contract as implemented by:
   - empty/unset means allow all
 - `HUMAN_ALLOWLIST`
   - comma-separated allowed human identities for `/v1/inject`
-  - empty/unset means allow all
+  - evaluated after a valid `INJECT_TOKENS` bearer token
+  - empty/unset means any identity may inject if the token is valid
+- `INJECT_TOKENS`
+  - comma-separated bearer tokens for `/v1/inject` and human-created `POST /v1/conversations`
+  - empty/unset means token-authenticated inject and human conversation creation fail closed
+- `OBSERVE_TOKENS`
+  - comma-separated bearer tokens for `/v1/observe`
+  - `Authorization: Bearer <token>` is preferred; `?token=<token>` exists only for SSE clients that cannot set headers
+  - empty/unset means token-authenticated observe fails closed; agent HMAC observe remains available
 
 ### Store selection order
 

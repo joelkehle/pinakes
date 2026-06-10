@@ -2,7 +2,11 @@ package busclient
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -142,5 +146,50 @@ func TestListAgentsDecodesDescription(t *testing.T) {
 	}
 	if agents[0].Meta == nil || agents[0].Meta.HealthURL != "http://polsia-agent/health" {
 		t.Fatalf("meta = %#v", agents[0].Meta)
+	}
+}
+
+func TestCreateConversationSignsBody(t *testing.T) {
+	t.Parallel()
+
+	const secret = "secret-a"
+	var gotAgentID, gotSignature string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/conversations" {
+			t.Fatalf("path = %s, want /v1/conversations", r.URL.Path)
+		}
+		gotAgentID = r.Header.Get("X-Agent-ID")
+		gotSignature = r.Header.Get("X-Bus-Signature")
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"conversation_id":"conv-1"}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	conversationID, err := client.CreateConversation(context.Background(), "agent-a", secret, CreateConversationRequest{
+		ConversationID: "conv-1",
+		Title:          "Test",
+		Participants:   []string{"agent-a", "agent-b"},
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation() error = %v", err)
+	}
+	if conversationID != "conv-1" {
+		t.Fatalf("conversationID = %q, want conv-1", conversationID)
+	}
+	if gotAgentID != "agent-a" {
+		t.Fatalf("X-Agent-ID = %q, want agent-a", gotAgentID)
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(gotBody)
+	wantSignature := hex.EncodeToString(mac.Sum(nil))
+	if gotSignature != wantSignature {
+		t.Fatalf("signature = %q, want %q", gotSignature, wantSignature)
 	}
 }

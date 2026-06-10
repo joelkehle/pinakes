@@ -58,6 +58,14 @@ type AgentInfo struct {
 	Status        string     `json:"status"`
 }
 
+type ConversationInfo struct {
+	ConversationID string   `json:"conversation_id"`
+	Title          string   `json:"title,omitempty"`
+	Participants   []string `json:"participants,omitempty"`
+	Status         string   `json:"status,omitempty"`
+	MessageCount   int      `json:"message_count,omitempty"`
+}
+
 type RegisterAgentRequest struct {
 	AgentID       string     `json:"agent_id"`
 	Secret        string     `json:"secret"`
@@ -71,6 +79,13 @@ type RegisterAgentRequest struct {
 	Mode          string     `json:"mode"`
 	CallbackURL   string     `json:"callback_url,omitempty"`
 	TTL           int        `json:"ttl"`
+}
+
+type CreateConversationRequest struct {
+	ConversationID string   `json:"conversation_id,omitempty"`
+	Title          string   `json:"title,omitempty"`
+	Participants   []string `json:"participants,omitempty"`
+	Meta           any      `json:"meta,omitempty"`
 }
 
 type Client struct {
@@ -170,6 +185,28 @@ func (c *Client) SendMessage(ctx context.Context, from, secret, to, conversation
 		return "", fmt.Errorf("missing message_id in response")
 	}
 	return resp.MessageID, nil
+}
+
+func (c *Client) CreateConversation(ctx context.Context, agentID, secret string, req CreateConversationRequest) (string, error) {
+	blob, _ := json.Marshal(req)
+	headers := map[string]string{
+		"X-Agent-ID":      agentID,
+		"X-Bus-Signature": Sign(secret, blob),
+	}
+	out, _, err := c.DoJSON(ctx, http.MethodPost, "/v1/conversations", blob, headers)
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(resp.ConversationID) == "" {
+		return "", fmt.Errorf("missing conversation_id in response")
+	}
+	return resp.ConversationID, nil
 }
 
 func (c *Client) PollInbox(ctx context.Context, agentID, secret string, cursor int, waitSec int) ([]InboxEvent, int, error) {

@@ -20,6 +20,11 @@ import (
 	"github.com/joelkehle/pinakes/pkg/bus"
 )
 
+const (
+	testInjectToken  = "test-inject-token"
+	testObserveToken = "test-observe-token"
+)
+
 func signPayload(secret string, payload []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write(payload)
@@ -125,7 +130,11 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 	}
 
 	convReq := map[string]any{"conversation_id": "conv-1", "title": "test", "participants": []string{"a", "b"}, "meta": map[string]any{"case": "c1"}}
-	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", convReq, nil), 200)
+	convBlob, _ := json.Marshal(convReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", convReq, map[string]string{
+		"X-Agent-ID":      "a",
+		"X-Bus-Signature": signPayload("secret-a", convBlob),
+	}), 200)
 	blobConvs := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, nil), 200)
 	if !bytes.Contains(blobConvs, []byte("conv-1")) {
 		t.Fatalf("expected conversation listing to include conv-1: %s", string(blobConvs))
@@ -171,7 +180,9 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 	}
 
 	injectReq := map[string]any{"identity": "joel", "conversation_id": "conv-1", "to": "b", "body": "human note"}
-	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", injectReq, nil), 200)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", injectReq, map[string]string{
+		"Authorization": "Bearer " + testInjectToken,
+	}), 200)
 
 	healthBody := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/health", nil, nil), 200)
 	var health struct {
@@ -225,10 +236,15 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 }
 
 func TestContractAllEndpoints(t *testing.T) {
-	runContractAllEndpoints(t, newContractServer())
+	runContractAllEndpoints(t, newContractServerWithEnv(t, map[string]string{
+		"INJECT_TOKENS":  testInjectToken,
+		"OBSERVE_TOKENS": testObserveToken,
+	}))
 }
 
 func TestContractAllEndpointsPersistentBackend(t *testing.T) {
+	t.Setenv("INJECT_TOKENS", testInjectToken)
+	t.Setenv("OBSERVE_TOKENS", testObserveToken)
 	runContractAllEndpoints(t, newContractServerPersistent(t))
 }
 
@@ -688,6 +704,8 @@ func TestObserveSSECursorResume(t *testing.T) {
 	defer cancelObserve()
 	reqObserve, _ := http.NewRequestWithContext(ctxObserve, http.MethodGet, ts.URL+"/v1/observe", nil)
 	reqObserve.Close = true
+	reqObserve.Header.Set("X-Agent-ID", "a")
+	reqObserve.Header.Set("X-Bus-Signature", signPayload("secret-a", []byte(reqObserve.URL.RawQuery)))
 	respObserve, err := c.Do(reqObserve)
 	if err != nil {
 		t.Fatalf("open observe: %v", err)
@@ -723,6 +741,8 @@ func TestObserveSSECursorResume(t *testing.T) {
 	reqResume, _ := http.NewRequestWithContext(ctxResume, http.MethodGet, ts.URL+"/v1/observe", nil)
 	reqResume.Close = true
 	reqResume.Header.Set("Last-Event-ID", firstID)
+	reqResume.Header.Set("X-Agent-ID", "a")
+	reqResume.Header.Set("X-Bus-Signature", signPayload("secret-a", []byte(reqResume.URL.RawQuery)))
 	respResume, err := c.Do(reqResume)
 	if err != nil {
 		t.Fatalf("open resumed observe: %v", err)
@@ -749,6 +769,137 @@ func TestObserveSSECursorResume(t *testing.T) {
 	}
 	cancelResume()
 	_ = respResume.Body.Close()
+}
+
+func TestContractInjectRequiresToken(t *testing.T) {
+	noTokenTS := httptest.NewServer(newContractServer())
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	mustStatus(t, doJSON(t, c, http.MethodPost, noTokenTS.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+	}, nil), http.StatusOK)
+	mustStatus(t, doJSON(t, c, http.MethodPost, noTokenTS.URL+"/v1/inject", map[string]any{
+		"identity": "joel", "to": "b", "body": "no token configured",
+	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusForbidden)
+	noTokenTS.Close()
+
+	h := newContractServerWithEnv(t, map[string]string{"INJECT_TOKENS": testInjectToken})
+	ts := httptest.NewServer(h)
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+	}, nil), http.StatusOK)
+
+	injectReq := map[string]any{"identity": "joel", "to": "b", "body": "hello"}
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", injectReq, nil), http.StatusForbidden)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", injectReq, map[string]string{
+		"Authorization": "Bearer " + testInjectToken,
+	}), http.StatusOK)
+}
+
+func TestContractObserveRequiresTokenOrAgentHMAC(t *testing.T) {
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	noTokenTS := httptest.NewServer(newContractServer())
+	reqNoToken, _ := http.NewRequest(http.MethodGet, noTokenTS.URL+"/v1/observe", nil)
+	respNoToken, err := c.Do(reqNoToken)
+	if err != nil {
+		t.Fatalf("observe no token request: %v", err)
+	}
+	mustStatus(t, respNoToken, http.StatusForbidden)
+	noTokenTS.Close()
+
+	h := newContractServerWithEnv(t, map[string]string{"OBSERVE_TOKENS": testObserveToken})
+	ts := httptest.NewServer(h)
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+	}, nil), http.StatusOK)
+
+	reqDenied, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/observe", nil)
+	respDenied, err := c.Do(reqDenied)
+	if err != nil {
+		t.Fatalf("observe denied request: %v", err)
+	}
+	mustStatus(t, respDenied, http.StatusForbidden)
+
+	reqBearer, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/observe", nil)
+	reqBearer.Header.Set("Authorization", "Bearer "+testObserveToken)
+	respBearer, err := c.Do(reqBearer)
+	if err != nil {
+		t.Fatalf("observe bearer request: %v", err)
+	}
+	if respBearer.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respBearer.Body)
+		_ = respBearer.Body.Close()
+		t.Fatalf("bearer status=%d body=%s", respBearer.StatusCode, string(body))
+	}
+	_ = respBearer.Body.Close()
+
+	reqQuery, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/observe?token="+testObserveToken, nil)
+	respQuery, err := c.Do(reqQuery)
+	if err != nil {
+		t.Fatalf("observe query-token request: %v", err)
+	}
+	if respQuery.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respQuery.Body)
+		_ = respQuery.Body.Close()
+		t.Fatalf("query token status=%d body=%s", respQuery.StatusCode, string(body))
+	}
+	_ = respQuery.Body.Close()
+
+	reqHMAC, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/observe?cursor=0", nil)
+	reqHMAC.Header.Set("X-Agent-ID", "a")
+	reqHMAC.Header.Set("X-Bus-Signature", signPayload("secret-a", []byte(reqHMAC.URL.RawQuery)))
+	respHMAC, err := c.Do(reqHMAC)
+	if err != nil {
+		t.Fatalf("observe hmac request: %v", err)
+	}
+	if respHMAC.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respHMAC.Body)
+		_ = respHMAC.Body.Close()
+		t.Fatalf("hmac status=%d body=%s", respHMAC.StatusCode, string(body))
+	}
+	_ = respHMAC.Body.Close()
+}
+
+func TestContractConversationCreateRequiresTokenOrAgentHMAC(t *testing.T) {
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	noTokenTS := httptest.NewServer(newContractServer())
+	mustStatus(t, doJSON(t, c, http.MethodPost, noTokenTS.URL+"/v1/conversations", map[string]any{
+		"conversation_id": "conv-denied",
+	}, nil), http.StatusForbidden)
+	noTokenTS.Close()
+
+	h := newContractServerWithEnv(t, map[string]string{"INJECT_TOKENS": testInjectToken})
+	ts := httptest.NewServer(h)
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+	}, nil), http.StatusOK)
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", map[string]any{
+		"conversation_id": "conv-no-auth",
+	}, nil), http.StatusForbidden)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", map[string]any{
+		"conversation_id": "conv-token",
+	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusOK)
+
+	hmacReq := map[string]any{"conversation_id": "conv-hmac", "participants": []string{"a"}}
+	hmacBlob, _ := json.Marshal(hmacReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", hmacReq, map[string]string{
+		"X-Agent-ID":      "a",
+		"X-Bus-Signature": signPayload("secret-a", hmacBlob),
+	}), http.StatusOK)
 }
 
 func TestContractPushModeCallbackDelivery(t *testing.T) {
@@ -842,6 +993,7 @@ func TestContractRegisterHonorsAgentAllowlist(t *testing.T) {
 func TestContractInjectHonorsHumanAllowlist(t *testing.T) {
 	h := newContractServerWithEnv(t, map[string]string{
 		"HUMAN_ALLOWLIST": "joel,alex",
+		"INJECT_TOKENS":   testInjectToken,
 	})
 	ts := httptest.NewServer(h)
 	defer func() {
@@ -858,18 +1010,18 @@ func TestContractInjectHonorsHumanAllowlist(t *testing.T) {
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", regB, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", map[string]any{
 		"conversation_id": "conv-human", "participants": []string{"a", "b"},
-	}, nil), http.StatusOK)
+	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusOK)
 
 	denied := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", map[string]any{
 		"identity": "sam", "conversation_id": "conv-human", "to": "b", "body": "not allowed",
-	}, nil), http.StatusUnauthorized)
+	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusUnauthorized)
 	if !bytes.Contains(denied, []byte("human identity not allowed")) {
 		t.Fatalf("expected human allowlist denial, got: %s", string(denied))
 	}
 
 	allowed := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", map[string]any{
 		"identity": "joel", "conversation_id": "conv-human", "to": "b", "body": "allowed",
-	}, nil), http.StatusOK)
+	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusOK)
 	if !bytes.Contains(allowed, []byte(`"ok":true`)) {
 		t.Fatalf("expected allowed inject response, got: %s", string(allowed))
 	}
@@ -890,6 +1042,8 @@ func TestBusConfigSurfaceDocumented(t *testing.T) {
 		"ALLOWLIST_FILE",
 		"AGENT_ALLOWLIST",
 		"HUMAN_ALLOWLIST",
+		"INJECT_TOKENS",
+		"OBSERVE_TOKENS",
 		"--db",
 		"GracePeriod = 30s",
 		"ProgressMinInterval = 2s",
