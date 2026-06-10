@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -360,13 +361,33 @@ func TestNewServerFromEnvFallsBackToEnvAllowlistWhenFileUnset(t *testing.T) {
 	}
 }
 
+// syncLogBuffer is a mutex-guarded log sink: the allowlist watcher goroutine
+// writes to the test logger while the test body reads it, so a bare
+// bytes.Buffer would be a data race under -race.
+type syncLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestAllowlistWatcherReloadsAtomicRenameAndPreservesLiveAgent(t *testing.T) {
 	dir := t.TempDir()
 	allowlistPath := filepath.Join(dir, "allowlist.txt")
 	writeAllowlistFileAtomically(t, allowlistPath, "# comment", "a", "b")
 
 	server := newServerForTestWithEnv(t, map[string]string{"ALLOWLIST_FILE": allowlistPath})
-	var logBuf bytes.Buffer
+	var logBuf syncLogBuffer
 	server.logger = log.New(&logBuf, "", 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -410,7 +431,7 @@ func TestAllowlistWatcherKeepsLastGoodSetOnReloadError(t *testing.T) {
 	writeAllowlistFileAtomically(t, allowlistPath, "a", "b")
 
 	server := newServerForTestWithEnv(t, map[string]string{"ALLOWLIST_FILE": allowlistPath})
-	var logBuf bytes.Buffer
+	var logBuf syncLogBuffer
 	server.logger = log.New(&logBuf, "", 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
