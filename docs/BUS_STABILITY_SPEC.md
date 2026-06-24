@@ -63,7 +63,7 @@ triage-intake
 bus:
   volumes:
     - bus-data:/data
-    - /home/joelkehle/Projects/shared/manager/ops/config/allowlist.txt:/etc/pinakes/allowlist.txt:ro
+    - /home/joelkehle/Projects/shared/manager/ops/config:/etc/pinakes:ro
   environment:
     - ALLOWLIST_FILE=/etc/pinakes/allowlist.txt
 ```
@@ -86,70 +86,141 @@ To add an agent: edit `allowlist.txt` in `~/Projects/shared/manager`, commit, bu
 
 **Goal:** Decoupling the bus lifecycle from any agent stack so agent deploys never risk bouncing the bus.
 
-**Current state:** Bus is defined in `ucla-tdg/ucla-tdg-ip-agents/deploy/docker-compose.yml` alongside 7 IP agents. Three stacks (`ucla-tdg/ucla-tdg-ip-agents`, `jk/jk-email-agents`, `ucla-tdg/ucla-tdg-email-triage`) all depend on this bus container.
+**Verified production state (audit generated 2026-06-23T00:49:45Z):** UCLA and
+JK are separate operational domains, not one shared runtime.
+
+| Domain | Current Compose project | Host port | Network | State volume |
+| --- | --- | --- | --- | --- |
+| UCLA | `deploy` | `8080` | `tta-agentnet` | `deploy_bus-data` |
+| JK | `jk-email-agents` | `8081` | `jk-email-agents_default` | `jk-email-agents_jk-bus-data` |
+
+Both bus containers were running `ghcr.io/joelkehle/pinakes:v0.3.0`. Re-run the
+read-only inventory before cutover because production may have changed after
+the audit.
+
+`tta-agentnet` also carries the `langfuse-stack` services. Langfuse does not
+require direct bus connectivity. Fix 2 must nevertheless reuse this existing
+network, preserve the `bus` network alias, and must not recreate or split the
+network as an incidental part of the bus move.
+
+The audit found legacy networks (`agent-bus-v2_agentnet`,
+`techtransfer-agency_agentnet`, `tta-agentnet-repair-17615`,
+`tta-agentnet-smoke`) and similarly named legacy volumes
+(`agent-bus-v2_bus-data`, `techtransfer-agency_bus-data`). They are out of scope
+and must not be referenced or deleted without a separate cleanup plan and
+explicit Joel approval.
 
 **Prerequisite:** Fix 3 (Compose v2) should land first or simultaneously. This is compose-stack surgery — do it on v2, not v1.
 
 **Implementation:**
 
-1. Create `~/Projects/shared/pinakes/deploy/docker-compose.yml` — bus-only stack:
+1. Run a read-only host inventory:
+   - confirm `docker compose version` is v2
+   - list running bus containers, images, ports, Compose project labels,
+     mounts, and attached networks
+   - identify each consumer stack and the DNS name it uses for its bus
+   - identify the exact existing state volume for each bus
+   - audit cron, systemd, and scripts for `docker-compose` v1 usage
+
+2. Create `~/Projects/shared/pinakes/deploy/docker-compose.yml` — a reusable
+bus-only stack definition. Host-specific values must be required rather than
+silently defaulted:
 
 ```yaml
 services:
   bus:
-    image: ghcr.io/joelkehle/pinakes:${PINAKES_TAG:-latest}
+    image: ghcr.io/joelkehle/pinakes:${PINAKES_TAG:?set an approved released tag}
     ports:
-      - "${BUS_PORT:-8080}:8080"
+      - "${BUS_PORT:?set from host inventory}:8080"
     volumes:
       - bus-data:/data
-      - /home/joelkehle/Projects/shared/manager/ops/config/allowlist.txt:/etc/pinakes/allowlist.txt:ro
+      - ${MANAGER_CONFIG_DIR:?set manager config directory}:/etc/pinakes:ro
     environment:
-      - ALLOWLIST_FILE=/etc/pinakes/allowlist.txt
+      ALLOWLIST_FILE: /etc/pinakes/allowlist.txt
+      DB_PATH: /data/bus.db
+      STATE_FILE: /data/state.json
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/health"]
       interval: 5s
       timeout: 3s
       retries: 5
     networks:
-      - agentnet
+      agentnet:
+        aliases:
+          - bus
     restart: unless-stopped
 
 volumes:
   bus-data:
-    name: deploy_bus-data
+    name: ${BUS_DATA_VOLUME:?set exact existing volume name}
     external: true
 
 networks:
   agentnet:
-    name: ${STACK_NETWORK_NAME:-tta-agentnet}
+    name: ${STACK_NETWORK_NAME:?set exact existing network name}
+    external: true
 ```
 
-**Volume migration:** The existing bus-data volume is named `deploy_bus-data` (compose prefixes project name). The new stack must reference it as external with the same name to reuse existing state. Do NOT create a new volume — that would fork bus state.
+**Volume migration:** Do not assume the volume is named `deploy_bus-data`.
+Inspect the running bus and use its exact existing volume name. The new stack
+must reference that volume as external. Do NOT create a new volume — that would
+fork bus state. Stop the old bus cleanly and back up the volume before starting
+the new project.
 
-2. Remove `bus` service from `ucla-tdg/ucla-tdg-ip-agents/deploy/docker-compose.yml`. Remove `depends_on: bus` from all agents. Drop `network_mode` - use external network only:
+3. Do not run `docker compose down` on the old agent project during cutover.
+Stop only its bus service, preserving its containers, volume, and network for
+fast rollback:
 
-3. Update all three consumer stacks to declare the network as external:
+```bash
+docker compose -f <old-compose-file> -p <old-project> stop bus
+```
+
+4. Start the independent bus project with its confirmed domain-specific env
+file and project name:
+   - UCLA: `.env.ucla`, project `pinakes-ucla`, port `8080`,
+     network `tta-agentnet`, volume `deploy_bus-data`
+   - JK: `.env.jk`, project `pinakes-jk`, port `8081`,
+     network `jk-email-agents_default`, volume
+     `jk-email-agents_jk-bus-data`
+
+Migrate and accept one domain completely before starting the other.
+
+5. After the new bus is healthy, remove the `bus` service from each consumer
+Compose file. Remove `depends_on: bus` from all agents. Drop `network_mode` and
+use only the confirmed external network:
+
+Each consumer stack must declare the confirmed network as external:
 
 ```yaml
 networks:
   agentnet:
     external: true
-    name: ${STACK_NETWORK_NAME:-tta-agentnet}
+    name: ${STACK_NETWORK_NAME:?set from host inventory}
 ```
 
-4. Update `deploy/.env.example` in all three repos to remove bus config (it lives in `shared/pinakes/deploy` now).
+6. Update `deploy/.env.example` in all three repos to remove bus config (it
+lives in `shared/pinakes/deploy` now).
 
-**Agent retry behavior:** Before implementing, confirm that all three agent repos retry registration on bus unavailability. Check:
-- `ucla-tdg/ucla-tdg-ip-agents` - operator bridge heartbeat loop (`internal/operator/bridge.go`)
-- `jk/jk-email-agents` - agent main loops
-- `ucla-tdg/ucla-tdg-email-triage` - triage-intake and adapter main loops
+**Agent retry behavior:** Recovery behavior is mixed:
 
-All should already retry via heartbeat (60s interval), but verify before removing `depends_on`.
+- UCLA IP agents and most JK agents retry registration and heartbeat
+  in-process.
+- Some UCLA email-triage daemons rely on Docker restart if their initial
+  registration or poll fails.
 
-**Deploy order:** Bus stack first, then agent stacks in any order.
+Keep the UCLA `:8080` handoff as short as possible. After cutover, verify
+registry reconvergence by expected agent identity, not only by total count,
+because live counts change over time. Confirm the email-triage daemons have
+returned and inspect Docker restart state for any missing daemon.
+
+**Deploy order:** Inventory first. Then migrate one bus domain completely:
+stop only the old bus, back up its volume, start and verify the independent bus,
+then migrate its consumer stacks one at a time. Finish acceptance and preserve
+rollback before starting another bus domain.
 
 **Verify:**
-- Stop and restart `ucla-tdg/ucla-tdg-ip-agents` agents without touching the bus
+- Rebuild one agent service without using `docker compose down`
+- Confirm the bus `StartedAt` and restart count do not change
 - Bus stays up, all agents from other stacks stay registered
 - New agent deploys in any stack don't affect the bus
 
@@ -157,7 +228,10 @@ All should already retry via heartbeat (60s interval), but verify before removin
 
 **Goal:** Eliminate the `ContainerConfig` KeyError bug.
 
-**Current state:** The host uses `docker-compose` v1 (Python, 1.29.2). The compose files already use v2 syntax. The bug is in the Python client, not the file format.
+**Verified current state:** The active `deploy` and `jk-email-agents` projects
+were created with Compose v2 (`2.27.0`). Compose v1 (`1.29.2`) labels remain on
+inactive-looking legacy resources, which are out of scope for Fix 2. Confirm
+the operator command resolves to Compose v2 immediately before cutover.
 
 **Prerequisite for Fix 2.** Do this first or at the same time as Fix 2.
 
@@ -186,7 +260,7 @@ sudo apt-get update && sudo apt-get install docker-compose-plugin
 **Verify:**
 - `docker compose version` shows v2
 - `docker compose up -d` in all three stacks works without `ContainerConfig` errors
-- Full cycle: `docker compose down && docker compose up -d` with no cascading failures
+- `docker compose config` and targeted `docker compose up -d` work in all three stacks without `ContainerConfig` errors
 
 ## Revised implementation order
 
@@ -202,6 +276,9 @@ sudo apt-get update && sudo apt-get install docker-compose-plugin
 - Don't fail open on misconfiguration. Configured file path must be valid at startup.
 - Don't evict live agents on allowlist removal. Block future registration only.
 - Don't move the old `docker-compose` binary until host automation is audited.
+- Don't run `docker compose down` on the old agent project during bus cutover.
+- Don't assume host ports, volume names, network names, or the number of buses
+  from repository documentation; inventory the running host first.
 
 ## Codex review findings — resolved
 

@@ -1,0 +1,32 @@
+services:
+  bus:
+    image: ghcr.io/joelkehle/pinakes:${PINAKES_TAG:?set PINAKES_TAG to an approved released tag}
+    ports:
+      - "${BUS_PORT:?set BUS_PORT from the host inventory}:8080"
+    volumes:
+      - bus-data:/data
+      - ${MANAGER_CONFIG_DIR:?set MANAGER_CONFIG_DIR to the manager ops config directory}:/etc/pinakes:ro
+    environment:
+      ALLOWLIST_FILE: /etc/pinakes/allowlist.txt
+      DB_PATH: /data/bus.db
+      STATE_FILE: /data/state.json
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      agentnet:
+        aliases:
+          - bus
+    restart: unless-stopped
+
+volumes:
+  bus-data:
+    name: ${BUS_DATA_VOLUME:?set BUS_DATA_VOLUME to the exact existing volume name}
+    external: true
+
+networks:
+  agentnet:
+    name: ${STACK_NETWORK_NAME:?set STACK_NETWORK_NAME to the exact existing network name}
+    external: true
