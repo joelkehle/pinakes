@@ -1,8 +1,8 @@
 ---
-summary: Human release checklist for pinakes tags plus the settled v0.2.0 passport baseline note.
+summary: Human release checklist for pinakes tags. Current line is v0.3.0 (memory retention, deployed to both buses 2026-06-10); the v0.2.0 passport baseline is kept below as history.
 read_when:
   - preparing a new pinakes tag
-  - reviewing the v0.2.0 passport baseline
+  - reviewing the v0.3.0 retention line or the v0.2.0 passport baseline
   - coordinating downstream repo upgrades after a pinakes release
 status: working draft
 ---
@@ -13,7 +13,19 @@ status: working draft
 
 Do not tag or release without explicit Joel approval.
 
-## v0.2.0 Baseline
+## v0.3.0 (current)
+
+`v0.3.0` is the current release line. It was deployed to both buses (UCLA `:8080`, JK `:8081`) on 2026-06-10.
+
+What shipped on this line:
+
+- Memory retention: time-based pruning of messages, conversations, and agents (`*_RETENTION_SECONDS`, `MESSAGE_MAX_AGE_SECONDS`).
+- Per-agent and observe byte budgets (`MAX_INBOX_BYTES_PER_AGENT`, `MAX_OBSERVE_BYTES`) on top of the existing event-count caps.
+- Request body caps.
+- SQLite is now the default store backend (`STORE_BACKEND` defaults to `sqlite`; one-time JSON-state import runs on first boot).
+- Graceful shutdown: SIGTERM/SIGINT drains in-flight requests within the grace window, then closes the store cleanly. Deploy-side `stop_grace_period` and `GOMEMLIMIT` were bumped in the consumer stacks to match (see `docs/REFACTOR_BACKLOG.md` item 6).
+
+## v0.2.0 Baseline (history)
 
 `v0.2.0` is the first passport-capable release line.
 It is already released, and the shared bus runtime is deployed on that line.
@@ -26,11 +38,12 @@ It is the clean dependency boundary for downstream repos to consume:
 
 ## Pre-Tag Checklist
 
-1. Confirm repo gate passes:
-   - `go test ./...`
+1. Confirm the repo gate passes via the validation entrypoint:
+   - `agent-check` (runs `gofmt`, `go build ./...`, and `go test ./...`)
 2. Confirm docs are in place and consistent:
+   - `docs/BUS_HTTP_CONTRACT.md` — protocol contract; must reflect any protocol change in the release
+   - `docs/REFACTOR_BACKLOG.md` — deferred items reviewed; anything shipped this line marked DONE
    - `docs/AGENT_CITIZENSHIP.md`
-   - `docs/BUS_HTTP_CONTRACT.md`
    - `docs/PROTOCOL_DELTA.md`
    - `docs/PHASE5_PASSPORT_ROLLOUT.md`
 3. Confirm `README.md` reflects the release boundary:

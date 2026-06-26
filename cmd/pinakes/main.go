@@ -64,15 +64,26 @@ func runHTTPServer(addr string, handler http.Handler, store bus.API) {
 	}
 
 	log.Printf("pinakes listening on %s", addr)
+	// Buffered so the goroutine can deliver a listen error and exit even if the
+	// main goroutine already left the select (e.g. on a concurrent signal).
+	srvErr := make(chan error, 1)
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
+			srvErr <- err
 		}
 	}()
 
-	<-shutdownCtx.Done()
+	// Both exit paths converge here so the store is always closed through one
+	// code path. A listen failure (e.g. port already in use) used to log.Fatal
+	// inside the goroutine, skipping the store close below.
+	var listenErr error
+	select {
+	case <-shutdownCtx.Done():
+		log.Printf("shutdown requested")
+	case listenErr = <-srvErr:
+		log.Printf("http listen error: %v", listenErr)
+	}
 	stop()
-	log.Printf("shutdown requested")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -86,6 +97,12 @@ func runHTTPServer(addr string, handler http.Handler, store bus.API) {
 		if err := c.Close(); err != nil {
 			log.Printf("WARN closing store: %v", err)
 		}
+	}
+
+	// Exit non-zero only after the store is closed, so a port conflict still
+	// surfaces as a failure without skipping cleanup.
+	if listenErr != nil {
+		os.Exit(1)
 	}
 }
 

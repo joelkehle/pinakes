@@ -134,6 +134,10 @@ func importStateToSQLite(state persistentState, dbPath string) (migrationCounts,
 		}
 		if n, err := res.RowsAffected(); err == nil && n > 0 {
 			counts.secrets++
+		} else if err == nil && n == 0 {
+			// Orphan secret: no agent row matched, so the secret is unusable and
+			// dropped. Warn so a lost credential is visible in the migration log.
+			log.Printf("WARN dropping secret for unknown agent %s during migration", agentID)
 		}
 	}
 	for _, c := range state.Conversations {

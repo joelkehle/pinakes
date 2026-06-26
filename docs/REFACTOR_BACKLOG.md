@@ -18,7 +18,7 @@ Items deferred from the 2026-06-10 architecture review. None block current opera
 | 3 | Query-on-demand SQLite reads | Retention lengthened or working set >~500MB | L |
 | 4 | Retire JSON `PersistentStore` backend | One clean month on sqlite, both buses | S |
 | 5 | Push callback jitter + per-target circuit breaker | Push-mode agents in production | M |
-| 6 | Deploy-side: GOMEMLIMIT, stop_grace_period, tag bump | Next deploy of ucla-tdg-ip-agents stack | S |
+| 6 | Deploy-side: GOMEMLIMIT, stop_grace_period, tag bump | DONE 2026-06-10 | S |
 | 7 | Secret hygiene: encrypt secrets at rest | Security review or compliance ask | M (needs design) |
 | 8 | Extract testable `run()`/config package from `cmd/pinakes` | Shutdown + backend-selection logic settles | S |
 
@@ -52,8 +52,9 @@ Items deferred from the 2026-06-10 architecture review. None block current opera
 - **Why**: A single dead push-mode agent can starve delivery throughput for healthy targets.
 - **Trigger**: Push-mode agents in production (current fleet is mostly pull).
 
-## 6. Deploy-side hardening (not this repo)
+## 6. Deploy-side hardening (not this repo) — DONE 2026-06-10
 
+- **Status**: DONE 2026-06-10. Shipped with v0.3.0 (commits 33a9669 / 4c8f877 in the consumer repos): GOMEMLIMIT, `stop_grace_period`, and the tag bump are live on the bus container.
 - **What**: In `ucla-tdg-ip-agents/deploy/docker-compose.yml`: set `GOMEMLIMIT` ~1536MiB on the bus container, set `stop_grace_period: >=15s` so graceful shutdown completes, bump `PINAKES_TAG`.
 - **Why**: Memory headroom and clean shutdown for the new drain logic.
 - **Trigger**: Next deploy of that stack. Cross-reference: `docs/BUS_STABILITY_SPEC.md` Fix 2 (separate bus compose stack) remains open.

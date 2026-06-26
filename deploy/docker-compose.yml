@@ -1,0 +1,42 @@
+services:
+  bus:
+    image: ghcr.io/joelkehle/pinakes:${PINAKES_TAG:-v0.3.0}
+    restart: unless-stopped
+    # OOM-killed repeatedly on 2026-06-09/10 before pinakes v0.3.0 shipped
+    # event retention. The 2g cap stays as the hard backstop; GOMEMLIMIT
+    # below makes the Go GC press back well before the kernel kills us.
+    mem_limit: 2g
+    # v0.3.0 drains HTTP for up to 10s on SIGTERM before closing the store;
+    # give it headroom past Docker's 10s default so shutdown stays graceful.
+    stop_grace_period: 15s
+    ports:
+      - "${BUS_PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      GOMEMLIMIT: "1536MiB"
+      DB_PATH: ${PINAKES_DB_PATH:-}
+      STATE_FILE: "/data/state.json"
+      ALLOWLIST_FILE: "/etc/pinakes/allowlist.txt"
+      INJECT_TOKENS: ${PINAKES_INJECT_TOKEN:?}
+      OBSERVE_TOKENS: ${PINAKES_OBSERVE_TOKEN:?}
+    volumes:
+      - bus-data:/data
+      - /home/joelkehle/Projects/shared/manager/ops/config:/etc/pinakes:ro
+    networks:
+      - agentnet
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  bus-data:
+    name: deploy_bus-data
+    external: true
+
+networks:
+  agentnet:
+    external: true
+    name: ${STACK_NETWORK_NAME:-tta-agentnet}

@@ -2,9 +2,10 @@
 
 ## Handoff
 
-- Ball with: Codex (in `shared/pinakes`)
-- Blocking question: none (Codex review findings addressed below)
-- Next action: implement fix 1 (hot-reloadable allowlist)
+- Ball with: Joel / orchestrator for the live cutover
+- Blocking question: none
+- Status: Fixes 1, 2, and 3 are implemented in `shared/pinakes`
+- Next action: consumer-repo edits plus live cutover per `deploy/README.md`
 
 ## Problem
 
@@ -12,7 +13,7 @@ Three compose stacks share one pinakes bus. Adding a new agent to the allowlist 
 
 ## Three fixes, in priority order
 
-### Fix 1: Hot-reloadable allowlist
+### Fix 1: Hot-reloadable allowlist (IMPLEMENTED)
 
 **Goal:** Add agents to the allowlist without restarting the bus.
 
@@ -57,13 +58,13 @@ triage-intake
 - `go.mod` — add `github.com/fsnotify/fsnotify` dependency
 - `docs/BUS_HTTP_CONTRACT.md` — document `ALLOWLIST_FILE` behavior, startup semantics, reload semantics, removal semantics
 
-**Deploy change:** Bind-mount from manager ops config:
+**Deploy change:** Bind-mount the manager ops config directory:
 
 ```yaml
 bus:
   volumes:
     - bus-data:/data
-    - /home/joelkehle/Projects/shared/manager/ops/config/allowlist.txt:/etc/pinakes/allowlist.txt:ro
+    - /home/joelkehle/Projects/shared/manager/ops/config:/etc/pinakes:ro
   environment:
     - ALLOWLIST_FILE=/etc/pinakes/allowlist.txt
 ```
@@ -82,7 +83,18 @@ To add an agent: edit `allowlist.txt` in `~/Projects/shared/manager`, commit, bu
 
 **Verify:** Add an agent ID to the allowlist file while bus is running. Agent should be able to register without bus restart.
 
-### Fix 2: Separate bus compose stack
+### Fix 2: Separate bus compose stack (IMPLEMENTED)
+
+**Status:** Implemented (2026-06-10) in `deploy/docker-compose.yml`, `deploy/.env.example`, and `deploy/README.md`.
+
+**Verified corrections vs the original planning example:**
+
+- External network is `tta-agentnet`, configured as `external: true` with `name: ${STACK_NETWORK_NAME:-tta-agentnet}`. It is not `ucla-tdg-agentnet`.
+- Bus state reuses the live Docker volume `deploy_bus-data`, declared `external: true`. Do not create a new volume.
+- The allowlist mount is the manager config directory, `/home/joelkehle/Projects/shared/manager/ops/config:/etc/pinakes:ro`, not a file mount. Directory mounting preserves hot reload on atomic renames.
+- The full live env set is carried: `PORT`, `GOMEMLIMIT=1536MiB`, `DB_PATH`, `STATE_FILE`, `ALLOWLIST_FILE`, `INJECT_TOKENS`, and `OBSERVE_TOKENS`.
+- Runtime guards are carried: `mem_limit: 2g`, `stop_grace_period: 15s`, and the healthcheck keeps `wget --spider -q`.
+- Consumer-side edits are tracked separately: remove the `bus` service and `depends_on: bus` blocks from `ucla-tdg-ip-agents`, and declare `agentnet` external in consumer stacks. Those edits are not part of this pinakes-repo change/commit.
 
 **Goal:** Decoupling the bus lifecycle from any agent stack so agent deploys never risk bouncing the bus.
 
@@ -92,37 +104,7 @@ To add an agent: edit `allowlist.txt` in `~/Projects/shared/manager`, commit, bu
 
 **Implementation:**
 
-1. Create `~/Projects/shared/pinakes/deploy/docker-compose.yml` — bus-only stack:
-
-```yaml
-services:
-  bus:
-    image: ghcr.io/joelkehle/pinakes:${PINAKES_TAG:-latest}
-    ports:
-      - "${BUS_PORT:-8080}:8080"
-    volumes:
-      - bus-data:/data
-      - /home/joelkehle/Projects/shared/manager/ops/config/allowlist.txt:/etc/pinakes/allowlist.txt:ro
-    environment:
-      - ALLOWLIST_FILE=/etc/pinakes/allowlist.txt
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - agentnet
-    restart: unless-stopped
-
-volumes:
-  bus-data:
-    name: deploy_bus-data
-    external: true
-
-networks:
-  agentnet:
-    name: ${STACK_NETWORK_NAME:-tta-agentnet}
-```
+1. Create `~/Projects/shared/pinakes/deploy/docker-compose.yml` — bus-only stack. Done.
 
 **Volume migration:** The existing bus-data volume is named `deploy_bus-data` (compose prefixes project name). The new stack must reference it as external with the same name to reuse existing state. Do NOT create a new volume — that would fork bus state.
 
@@ -146,18 +128,20 @@ networks:
 
 All should already retry via heartbeat (60s interval), but verify before removing `depends_on`.
 
-**Deploy order:** Bus stack first, then agent stacks in any order.
+**Deploy order:** Follow `deploy/README.md`. The live cutover must free host port `:8080` from the old IP-agents stack before bringing up this standalone stack, then verify health and registry.
 
 **Verify:**
 - Stop and restart `ucla-tdg/ucla-tdg-ip-agents` agents without touching the bus
 - Bus stays up, all agents from other stacks stay registered
 - New agent deploys in any stack don't affect the bus
 
-### Fix 3: Compose v2 migration
+### Fix 3: Compose v2 migration (DONE)
+
+**Status:** Done. `docker compose version` confirms Docker Compose v2.27.0 installed on the host.
 
 **Goal:** Eliminate the `ContainerConfig` KeyError bug.
 
-**Current state:** The host uses `docker-compose` v1 (Python, 1.29.2). The compose files already use v2 syntax. The bug is in the Python client, not the file format.
+**Previous state:** The host used `docker-compose` v1 (Python, 1.29.2). The compose files already used v2 syntax. The bug was in the Python client, not the file format.
 
 **Prerequisite for Fix 2.** Do this first or at the same time as Fix 2.
 
@@ -190,9 +174,9 @@ sudo apt-get update && sudo apt-get install docker-compose-plugin
 
 ## Revised implementation order
 
-1. **Hot-reloadable allowlist (Fix 1)** — pinakes code change. Highest impact. Ship as a new pinakes release.
-2. **Compose v2 migration (Fix 3)** — infra prerequisite for Fix 2. Install plugin, update docs.
-3. **Separate bus stack (Fix 2)** — compose surgery. Do on v2.
+1. **Hot-reloadable allowlist (Fix 1)** — implemented in pinakes.
+2. **Compose v2 migration (Fix 3)** — done on the host; Docker Compose v2.27.0 confirmed.
+3. **Separate bus stack (Fix 2)** — implemented in pinakes; consumer repo edits and live cutover remain.
 
 ## What NOT to do
 

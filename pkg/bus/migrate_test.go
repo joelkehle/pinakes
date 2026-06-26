@@ -75,6 +75,11 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err := ps.SetAgentSecret("b", "secret-b"); err != nil {
 		t.Fatalf("set secret b: %v", err)
 	}
+	// Orphan secret: keyed to an agent that was never registered, so it has no
+	// matching agent row and must be dropped (and WARN-logged) by the migration.
+	if err := ps.SetAgentSecret("ghost", "secret-ghost"); err != nil {
+		t.Fatalf("set orphan secret: %v", err)
+	}
 
 	done, _, err := ps.SendMessage(SendMessageInput{
 		To:        "b",
@@ -141,6 +146,12 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	}
 	if secrets["a"] != "secret-a" || secrets["b"] != "secret-b" {
 		t.Fatalf("secrets missing after migration: %#v", secrets)
+	}
+	if _, ok := secrets["ghost"]; ok {
+		t.Fatalf("orphan secret should have been dropped, got %#v", secrets)
+	}
+	if len(secrets) != 2 {
+		t.Fatalf("expected 2 secrets after migration, got %d: %#v", len(secrets), secrets)
 	}
 
 	convs := ss.ListConversations(ListConversationsFilter{})

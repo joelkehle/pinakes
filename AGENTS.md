@@ -31,4 +31,4 @@ READ `~/Projects/shared/agent-scripts/AGENTS.MD` BEFORE ANYTHING (skip if missin
 
 - Releases are tag-driven. Push a `v*` tag to trigger the image build on ghcr.io.
 - Do not tag or release without explicit Joel approval.
-- Bus container currently runs in `~/Projects/ucla-tdg/ucla-tdg-ip-agents/deploy/docker-compose.yml` (planned move to `~/Projects/shared/pinakes/deploy/`).
+- Bus now runs from standalone stack `~/Projects/shared/pinakes/deploy/docker-compose.yml`, moved out of `ucla-tdg-ip-agents` per `docs/BUS_STABILITY_SPEC.md` Fix 2.
