@@ -9,7 +9,12 @@ services:
     environment:
       ALLOWLIST_FILE: /etc/pinakes/allowlist.txt
       DB_PATH: /data/bus.db
+      GOMEMLIMIT: ${GOMEMLIMIT:?set GOMEMLIMIT to match the current live bus container}
+      INJECT_TOKENS: ${INJECT_TOKENS:?set from the current live bus container at deploy/config-check time; do not commit real tokens}
+      OBSERVE_TOKENS: ${OBSERVE_TOKENS:?set from the current live bus container at deploy/config-check time; do not commit real tokens}
       STATE_FILE: /data/state.json
+    mem_limit: ${BUS_MEMORY_LIMIT:?set Docker memory limit to match the current live bus container}
+    stop_grace_period: 15s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/health"]
       interval: 5s

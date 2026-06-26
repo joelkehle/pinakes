@@ -13,9 +13,9 @@ UCLA and JK operate separate bus runtimes:
 
 Both currently run `ghcr.io/joelkehle/pinakes:v0.3.0`. The checked-in
 `.env.ucla` and `.env.jk` files are non-secret deployment templates containing
-only these verified topology values. Never add tokens, passwords, agent
-secrets, or other credentials to them. Re-run the inventory before cutover in
-case production has changed since the audit.
+only verified topology values and non-secret runtime limits. Never add live
+tokens, passwords, agent secrets, or other credentials to them. Re-run the
+inventory before cutover in case production has changed since the audit.
 
 ## Phase 1: Read-only host inventory
 
@@ -54,6 +54,9 @@ For each bus domain, write down:
 - which agent stacks consume that bus
 - the manager config directory and allowlist file
 - the currently deployed pinakes image tag
+- the current `GOMEMLIMIT`, Docker memory limit, and stop grace period
+- whether `INJECT_TOKENS` and `OBSERVE_TOKENS` are set, without displaying or
+  committing their values
 
 UCLA and JK must retain separate environment files, Compose project names,
 networks, and state volumes. Containers with the `bus` service alias coexist
@@ -84,6 +87,21 @@ cat .env.ucla
 cat .env.jk
 ```
 
+The compose template intentionally requires the live token env vars:
+`INJECT_TOKENS` and `OBSERVE_TOKENS`. These are production secrets. Do not add
+their values to `.env.ucla`, `.env.jk`, git history, PR comments, or terminal
+logs. During config-check or deployment, supply them from the current live bus
+container via the operator shell or a gitignored local env file on beelink.
+Without these values, `/v1/inject`, human-created conversations, and
+token-based `/v1/observe` fail closed after cutover.
+
+The checked-in domain env files do carry the non-secret runtime limits used by
+the new template:
+
+- `GOMEMLIMIT`
+- `BUS_MEMORY_LIMIT`, rendered as the Docker `mem_limit`
+- `stop_grace_period: 15s` in the compose file
+
 Both confirmed networks already exist. Inspect them before cutover, but do not
 recreate them:
 
@@ -93,11 +111,12 @@ docker network inspect jk-email-agents_default
 ```
 
 Validate interpolation before touching the old bus. This intentionally fails
-if any host-specific value is missing:
+if any host-specific value is missing. The token values must already be present
+in the operator environment or another non-committed env source:
 
 ```bash
-docker compose --env-file .env.ucla -p pinakes-ucla config
-docker compose --env-file .env.jk -p pinakes-jk config
+docker compose --env-file deploy/.env.ucla -p pinakes-ucla -f deploy/docker-compose.yml config
+docker compose --env-file deploy/.env.jk -p pinakes-jk -f deploy/docker-compose.yml config
 ```
 
 The allowlist source of truth must be mounted as a read-only directory, not as
@@ -147,8 +166,8 @@ Start the new bus-only project and verify health and persisted registrations.
 Run these commands for only one domain at a time:
 
 ```bash
-docker compose --env-file .env.ucla -p pinakes-ucla up -d
-docker compose --env-file .env.ucla -p pinakes-ucla ps
+docker compose --env-file deploy/.env.ucla -p pinakes-ucla -f deploy/docker-compose.yml up -d
+docker compose --env-file deploy/.env.ucla -p pinakes-ucla -f deploy/docker-compose.yml ps
 curl -fsS http://localhost:8080/v1/health
 curl -fsS http://localhost:8080/v1/agents
 ```
@@ -196,7 +215,7 @@ than requiring an exact historical count.
 Because the old container, volume, and network were preserved, rollback is:
 
 ```bash
-docker compose --env-file .env.ucla -p pinakes-ucla stop bus
+docker compose --env-file deploy/.env.ucla -p pinakes-ucla -f deploy/docker-compose.yml stop bus
 docker compose -f <old-compose-file> -p <old-project> start bus
 ```
 

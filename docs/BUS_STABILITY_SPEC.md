@@ -96,7 +96,9 @@ JK are separate operational domains, not one shared runtime.
 
 Both bus containers were running `ghcr.io/joelkehle/pinakes:v0.3.0`. Re-run the
 read-only inventory before cutover because production may have changed after
-the audit.
+the audit. The standalone compose file must also carry over the current live
+runtime settings: `INJECT_TOKENS`, `OBSERVE_TOKENS`, `GOMEMLIMIT`, Docker
+memory limit, and `stop_grace_period`.
 
 `tta-agentnet` also carries the `langfuse-stack` services. Langfuse does not
 require direct bus connectivity. Fix 2 must nevertheless reuse this existing
@@ -138,7 +140,12 @@ services:
     environment:
       ALLOWLIST_FILE: /etc/pinakes/allowlist.txt
       DB_PATH: /data/bus.db
+      GOMEMLIMIT: ${GOMEMLIMIT:?set to match current live bus container}
+      INJECT_TOKENS: ${INJECT_TOKENS:?set from current live bus container; do not commit real tokens}
+      OBSERVE_TOKENS: ${OBSERVE_TOKENS:?set from current live bus container; do not commit real tokens}
       STATE_FILE: /data/state.json
+    mem_limit: ${BUS_MEMORY_LIMIT:?set to match current live bus container}
+    stop_grace_period: 15s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/health"]
       interval: 5s
@@ -166,6 +173,13 @@ Inspect the running bus and use its exact existing volume name. The new stack
 must reference that volume as external. Do NOT create a new volume — that would
 fork bus state. Stop the old bus cleanly and back up the volume before starting
 the new project.
+
+**Token migration:** `INJECT_TOKENS` and `OBSERVE_TOKENS` are required runtime
+secrets. They must be supplied from the current live bus configuration at
+config-check and deploy time, but must not be committed to `.env.ucla`,
+`.env.jk`, git history, PR comments, or logs. If these variables are omitted,
+`/v1/inject`, human-created conversations, and token-based `/v1/observe` fail
+closed even though health checks can still pass.
 
 3. Do not run `docker compose down` on the old agent project during cutover.
 Stop only its bus service, preserving its containers, volume, and network for
