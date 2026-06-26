@@ -1,29 +1,31 @@
 services:
   bus:
-    image: ghcr.io/joelkehle/pinakes:${PINAKES_TAG:-v0.3.0}
+    image: ghcr.io/joelkehle/pinakes:${PINAKES_TAG:?set PINAKES_TAG to an approved released tag}
     restart: unless-stopped
     # OOM-killed repeatedly on 2026-06-09/10 before pinakes v0.3.0 shipped
-    # event retention. The 2g cap stays as the hard backstop; GOMEMLIMIT
-    # below makes the Go GC press back well before the kernel kills us.
-    mem_limit: 2g
+    # event retention. The Docker cap is a hard backstop; GOMEMLIMIT makes the
+    # Go GC press back before the kernel kills the process.
+    mem_limit: ${BUS_MEMORY_LIMIT:?set BUS_MEMORY_LIMIT from the host inventory}
     # v0.3.0 drains HTTP for up to 10s on SIGTERM before closing the store;
     # give it headroom past Docker's 10s default so shutdown stays graceful.
     stop_grace_period: 15s
     ports:
-      - "${BUS_PORT:-8080}:8080"
+      - "${BUS_PORT:?set BUS_PORT from the host inventory}:8080"
     environment:
       PORT: "8080"
-      GOMEMLIMIT: "1536MiB"
-      DB_PATH: ${PINAKES_DB_PATH:-}
-      STATE_FILE: "/data/state.json"
-      ALLOWLIST_FILE: "/etc/pinakes/allowlist.txt"
-      INJECT_TOKENS: ${PINAKES_INJECT_TOKEN:?}
-      OBSERVE_TOKENS: ${PINAKES_OBSERVE_TOKEN:?}
+      GOMEMLIMIT: ${GOMEMLIMIT:?set GOMEMLIMIT from the host inventory}
+      DB_PATH: ${PINAKES_DB_PATH:?set PINAKES_DB_PATH from the host inventory}
+      STATE_FILE: /data/state.json
+      ALLOWLIST_FILE: /etc/pinakes/allowlist.txt
+      INJECT_TOKENS: ${PINAKES_INJECT_TOKEN:?set PINAKES_INJECT_TOKEN in the deploying shell}
+      OBSERVE_TOKENS: ${PINAKES_OBSERVE_TOKEN:?set PINAKES_OBSERVE_TOKEN in the deploying shell}
     volumes:
       - bus-data:/data
-      - /home/joelkehle/Projects/shared/manager/ops/config:/etc/pinakes:ro
+      - ${MANAGER_CONFIG_DIR:?set MANAGER_CONFIG_DIR to the manager ops config directory}:/etc/pinakes:ro
     networks:
-      - agentnet
+      agentnet:
+        aliases:
+          - bus
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/v1/health"]
       interval: 5s
@@ -33,10 +35,10 @@ services:
 
 volumes:
   bus-data:
-    name: deploy_bus-data
+    name: ${BUS_DATA_VOLUME:?set BUS_DATA_VOLUME to the exact existing volume name}
     external: true
 
 networks:
   agentnet:
+    name: ${STACK_NETWORK_NAME:?set STACK_NETWORK_NAME to the exact existing network name}
     external: true
-    name: ${STACK_NETWORK_NAME:-tta-agentnet}
