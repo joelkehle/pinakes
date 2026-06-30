@@ -135,7 +135,9 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 		"X-Agent-ID":      "a",
 		"X-Bus-Signature": signPayload("secret-a", convBlob),
 	}), 200)
-	blobConvs := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, nil), 200)
+	blobConvs := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, map[string]string{
+		"Authorization": "Bearer " + testObserveToken,
+	}), 200)
 	if !bytes.Contains(blobConvs, []byte("conv-1")) {
 		t.Fatalf("expected conversation listing to include conv-1: %s", string(blobConvs))
 	}
@@ -174,7 +176,9 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 	evtFinalBlob, _ := json.Marshal(evtFinalReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/events", evtFinalReq, map[string]string{"X-Agent-ID": "b", "X-Bus-Signature": signPayload("secret-b", evtFinalBlob)}), 200)
 
-	blobHistory := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-1/messages", nil, nil), 200)
+	blobHistory := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-1/messages", nil, map[string]string{
+		"Authorization": "Bearer " + testObserveToken,
+	}), 200)
 	if !bytes.Contains(blobHistory, []byte(sendResp.MessageID)) {
 		t.Fatalf("expected history to include message: %s", string(blobHistory))
 	}
@@ -866,6 +870,72 @@ func TestContractObserveRequiresTokenOrAgentHMAC(t *testing.T) {
 		t.Fatalf("hmac status=%d body=%s", respHMAC.StatusCode, string(body))
 	}
 	_ = respHMAC.Body.Close()
+}
+
+func TestContractConversationReadsRequireObserveAuth(t *testing.T) {
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	h := newContractServerWithEnv(t, map[string]string{"OBSERVE_TOKENS": testObserveToken})
+	ts := httptest.NewServer(h)
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+	}, nil), http.StatusOK)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+	}, nil), http.StatusOK)
+
+	convReq := map[string]any{
+		"conversation_id": "conv-private",
+		"title":           "private title",
+		"participants":    []string{"a", "b"},
+		"meta":            map[string]any{"sensitive": "yes"},
+	}
+	convBlob, _ := json.Marshal(convReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", convReq, map[string]string{
+		"X-Agent-ID":      "a",
+		"X-Bus-Signature": signPayload("secret-a", convBlob),
+	}), http.StatusOK)
+
+	sendReq := map[string]any{
+		"to": "b", "from": "a", "conversation_id": "conv-private", "request_id": "rid-private", "type": "request", "body": "private body",
+	}
+	sendBlob, _ := json.Marshal(sendReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq, map[string]string{
+		"X-Bus-Signature": signPayload("secret-a", sendBlob),
+	}), http.StatusOK)
+
+	mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, nil), http.StatusForbidden)
+	mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-private/messages", nil, nil), http.StatusForbidden)
+
+	listBody := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, map[string]string{
+		"Authorization": "Bearer " + testObserveToken,
+	}), http.StatusOK)
+	if !bytes.Contains(listBody, []byte("private title")) || !bytes.Contains(listBody, []byte("sensitive")) {
+		t.Fatalf("authorized conversation list missing private metadata: %s", string(listBody))
+	}
+	historyBody := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-private/messages", nil, map[string]string{
+		"Authorization": "Bearer " + testObserveToken,
+	}), http.StatusOK)
+	if !bytes.Contains(historyBody, []byte("private body")) {
+		t.Fatalf("authorized conversation history missing message body: %s", string(historyBody))
+	}
+
+	listQuery := "participant=a"
+	mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations?"+listQuery, nil, map[string]string{
+		"X-Agent-ID":      "a",
+		"X-Bus-Signature": signPayload("secret-a", []byte(listQuery)),
+	}), http.StatusOK)
+
+	historyQuery := "cursor=0"
+	mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-private/messages?"+historyQuery, nil, map[string]string{
+		"X-Agent-ID":      "a",
+		"X-Bus-Signature": signPayload("secret-a", []byte(historyQuery)),
+	}), http.StatusOK)
 }
 
 func TestContractConversationCreateRequiresTokenOrAgentHMAC(t *testing.T) {

@@ -501,6 +501,10 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{"ok": true, "conversation_id": c.ConversationID})
 	case http.MethodGet:
+		if err := s.verifyObserveAuth(r); err != nil {
+			writeBusError(w, err)
+			return
+		}
 		filter := bus.ListConversationsFilter{
 			Participant: strings.TrimSpace(r.URL.Query().Get("participant")),
 			Status:      strings.TrimSpace(r.URL.Query().Get("status")),
@@ -525,6 +529,10 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 	conversationID = strings.TrimSuffix(conversationID, "/")
 	if conversationID == "" {
 		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if err := s.verifyObserveAuth(r); err != nil {
+		writeBusError(w, err)
 		return
 	}
 

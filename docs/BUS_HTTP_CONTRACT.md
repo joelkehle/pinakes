@@ -52,10 +52,12 @@ This doc describes the extracted bus contract as implemented by:
 - `GET /v1/conversations`
   - source: `handleConversations`
   - optional query: `participant`, `status`
+  - auth: observe-equivalent auth: `Authorization: Bearer <token>` from `OBSERVE_TOKENS`, or `X-Agent-ID` + `X-Bus-Signature` over the exact raw query string
   - response: `conversations`
 - `GET /v1/conversations/{conversation_id}/messages`
   - source: `handleConversationMessages`
   - query: `cursor`, `limit`
+  - auth: observe-equivalent auth: `Authorization: Bearer <token>` from `OBSERVE_TOKENS`, or `X-Agent-ID` + `X-Bus-Signature` over the exact raw query string
   - response: `conversation_id`, `messages`, `cursor`
 
 ### Messaging
@@ -149,6 +151,7 @@ This doc describes the extracted bus contract as implemented by:
 - Ack auth uses the `agent_id` secret.
 - Event auth uses `X-Agent-ID` + that agent's secret.
 - Conversation creation requires agent HMAC over the raw body or a valid inject token.
+- Conversation listing and conversation message history require observe-equivalent auth because conversation metadata and message bodies can contain private operational data.
 - Observe requires an observe token (header preferred, `?token=` fallback for SSE clients) or agent HMAC over the exact raw query string.
 - Human inject requires a valid inject token and is then gated by `HUMAN_ALLOWLIST` if set.
 - `INJECT_TOKENS` or `OBSERVE_TOKENS` unset means token auth fails closed for those token paths.
