@@ -2,10 +2,25 @@ package bus
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestNewSQLiteStoreCreatesParentDir(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "nested", "bus.db")
+
+	s, err := NewSQLiteStore(dbPath, Config{Clock: time.Now})
+	if err != nil {
+		t.Fatalf("new sqlite store with nested db path: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("stat created sqlite db: %v", err)
+	}
+}
 
 func TestSQLiteRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
@@ -31,7 +46,7 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	}
 
 	if _, err := s1.RegisterAgent(RegisterAgentInput{
-		AgentID:       "a",
+		AgentID:       "ucla.a",
 		Mode:          AgentModePull,
 		Capabilities:  []string{"x"},
 		TTLSeconds:    60,
@@ -44,12 +59,12 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 	msg, _, err := s1.SendMessage(SendMessageInput{
-		To:        "b",
-		From:      "a",
+		To:        "ucla.b",
+		From:      "ucla.a",
 		RequestID: "rid-sqlite-1",
 		Type:      MessageTypeRequest,
 		Body:      "persist in sqlite",
@@ -70,7 +85,7 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	if len(agents) != 2 {
 		t.Fatalf("expected 2 agents after restore, got %d", len(agents))
 	}
-	if agents[0].AgentID != "a" {
+	if agents[0].AgentID != "ucla.a" {
 		t.Fatalf("expected first agent to sort as a, got %s", agents[0].AgentID)
 	}
 	if agents[0].Version != "v0.5.0" || agents[0].AgentClass != "worker" || agents[0].MutationClass != "observe" {
@@ -121,10 +136,10 @@ func TestSQLiteAgentSecretsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite store: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if err := s1.SetAgentSecret("a", "secret-a"); err != nil {
+	if err := s1.SetAgentSecret("ucla.a", "secret-a"); err != nil {
 		t.Fatalf("set secret: %v", err)
 	}
 	if err := s1.Close(); err != nil {
@@ -140,7 +155,7 @@ func TestSQLiteAgentSecretsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent secrets: %v", err)
 	}
-	if secrets["a"] != "secret-a" {
+	if secrets["ucla.a"] != "secret-a" {
 		t.Fatalf("secret not restored: %#v", secrets)
 	}
 }
@@ -228,19 +243,19 @@ func TestSQLiteAckPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 	msg, _, err := s1.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-ack", Type: MessageTypeRequest, Body: "ack me",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-ack", Type: MessageTypeRequest, Body: "ack me",
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	if err := s1.Ack(AckInput{AgentID: "b", MessageID: msg.MessageID, Status: "accepted"}); err != nil {
+	if err := s1.Ack(AckInput{AgentID: "ucla.b", MessageID: msg.MessageID, Status: "accepted"}); err != nil {
 		t.Fatalf("ack: %v", err)
 	}
 	s1.Close()
@@ -281,22 +296,22 @@ func TestSQLiteEventFinalPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 	msg, _, err := s1.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-final", Type: MessageTypeRequest, Body: "complete me",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-final", Type: MessageTypeRequest, Body: "complete me",
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	if err := s1.Ack(AckInput{AgentID: "b", MessageID: msg.MessageID, Status: "accepted"}); err != nil {
+	if err := s1.Ack(AckInput{AgentID: "ucla.b", MessageID: msg.MessageID, Status: "accepted"}); err != nil {
 		t.Fatalf("ack: %v", err)
 	}
-	if err := s1.PostEvent(EventInput{ActorAgentID: "b", MessageID: msg.MessageID, Type: "final", Body: "done"}); err != nil {
+	if err := s1.PostEvent(EventInput{ActorAgentID: "ucla.b", MessageID: msg.MessageID, Type: "final", Body: "done"}); err != nil {
 		t.Fatalf("final event: %v", err)
 	}
 	s1.Close()
@@ -339,7 +354,7 @@ func TestSQLiteConversationPersists(t *testing.T) {
 	}
 	conv, err := s1.CreateConversation(CreateConversationInput{
 		Title:        "test conv",
-		Participants: []string{"a", "b"},
+		Participants: []string{"ucla.a", "ucla.b"},
 	})
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
@@ -385,16 +400,16 @@ func TestSQLiteCountersPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 	// Send 3 messages to advance the counter.
 	for i := 1; i <= 3; i++ {
 		_, _, err := s1.SendMessage(SendMessageInput{
-			To: "b", From: "a", RequestID: "rid-cnt-" + string(rune('0'+i)), Type: MessageTypeRequest, Body: "msg",
+			To: "ucla.b", From: "ucla.a", RequestID: "rid-cnt-" + string(rune('0'+i)), Type: MessageTypeRequest, Body: "msg",
 		})
 		if err != nil {
 			t.Fatalf("send %d: %v", i, err)
@@ -409,16 +424,16 @@ func TestSQLiteCountersPreserved(t *testing.T) {
 	defer s2.Close()
 
 	// Register agents again (they expired on reload without inbox).
-	if _, err := s2.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
+	if _, err := s2.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 		t.Fatalf("re-register a: %v", err)
 	}
-	if _, err := s2.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
+	if _, err := s2.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 		t.Fatalf("re-register b: %v", err)
 	}
 
 	// Next message should be m-000004, not m-000001.
 	msg, _, err := s2.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-cnt-after", Type: MessageTypeRequest, Body: "after restart",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-cnt-after", Type: MessageTypeRequest, Body: "after restart",
 	})
 	if err != nil {
 		t.Fatalf("send after reopen: %v", err)
@@ -449,12 +464,12 @@ func TestSQLiteInjectPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
 	msg, err := s1.Inject(InjectInput{
 		Identity: "tester",
-		To:       "a",
+		To:       "ucla.a",
 		Body:     "human says hi",
 	})
 	if err != nil {

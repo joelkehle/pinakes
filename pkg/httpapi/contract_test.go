@@ -119,20 +119,20 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 		Transport: &http.Transport{DisableKeepAlives: true},
 	}
 
-	regA := map[string]any{"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a"}
-	regB := map[string]any{"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b"}
+	regA := map[string]any{"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a"}
+	regB := map[string]any{"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b"}
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", regA, nil), 200)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", regB, nil), 200)
 
 	blobAgents := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/agents", nil, nil), 200)
-	if !bytes.Contains(blobAgents, []byte("\"agent_id\":\"a\"")) || !bytes.Contains(blobAgents, []byte("\"agent_id\":\"b\"")) {
+	if !bytes.Contains(blobAgents, []byte("\"agent_id\":\"ucla.a\"")) || !bytes.Contains(blobAgents, []byte("\"agent_id\":\"ucla.b\"")) {
 		t.Fatalf("expected agents list to include a and b: %s", string(blobAgents))
 	}
 
-	convReq := map[string]any{"conversation_id": "conv-1", "title": "test", "participants": []string{"a", "b"}, "meta": map[string]any{"case": "c1"}}
+	convReq := map[string]any{"conversation_id": "conv-1", "title": "test", "participants": []string{"ucla.a", "ucla.b"}, "meta": map[string]any{"case": "c1"}}
 	convBlob, _ := json.Marshal(convReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", convReq, map[string]string{
-		"X-Agent-ID":      "a",
+		"X-Agent-ID":      "ucla.a",
 		"X-Bus-Signature": signPayload("secret-a", convBlob),
 	}), 200)
 	blobConvs := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, map[string]string{
@@ -143,7 +143,7 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 	}
 
 	sendReq := map[string]any{
-		"to": "b", "from": "a", "conversation_id": "conv-1", "request_id": "rid-1", "type": "request", "body": "do work",
+		"to": "ucla.b", "from": "ucla.a", "conversation_id": "conv-1", "request_id": "rid-1", "type": "request", "body": "do work",
 	}
 	sendBlob, _ := json.Marshal(sendReq)
 	blobSend := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq, map[string]string{"X-Bus-Signature": signPayload("secret-a", sendBlob)}), 200)
@@ -157,24 +157,24 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 		t.Fatalf("expected message_id in send response")
 	}
 
-	query := "agent_id=b&cursor=0&wait=0"
+	query := "agent_id=ucla.b&cursor=0&wait=0"
 	respInbox := doJSON(t, c, http.MethodGet, ts.URL+"/v1/inbox?"+query, nil, map[string]string{"X-Bus-Signature": signPayload("secret-b", []byte(query))})
 	blobInbox := mustStatus(t, respInbox, 200)
 	if !bytes.Contains(blobInbox, []byte(sendResp.MessageID)) {
 		t.Fatalf("expected inbox to include message: %s", string(blobInbox))
 	}
 
-	ackReq := map[string]any{"agent_id": "b", "message_id": sendResp.MessageID, "status": "accepted"}
+	ackReq := map[string]any{"agent_id": "ucla.b", "message_id": sendResp.MessageID, "status": "accepted"}
 	ackBlob, _ := json.Marshal(ackReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/acks", ackReq, map[string]string{"X-Bus-Signature": signPayload("secret-b", ackBlob)}), 200)
 
 	evtReq := map[string]any{"message_id": sendResp.MessageID, "type": "progress", "body": "50%"}
 	evtBlob, _ := json.Marshal(evtReq)
-	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/events", evtReq, map[string]string{"X-Agent-ID": "b", "X-Bus-Signature": signPayload("secret-b", evtBlob)}), 200)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/events", evtReq, map[string]string{"X-Agent-ID": "ucla.b", "X-Bus-Signature": signPayload("secret-b", evtBlob)}), 200)
 
 	evtFinalReq := map[string]any{"message_id": sendResp.MessageID, "type": "final", "body": "done"}
 	evtFinalBlob, _ := json.Marshal(evtFinalReq)
-	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/events", evtFinalReq, map[string]string{"X-Agent-ID": "b", "X-Bus-Signature": signPayload("secret-b", evtFinalBlob)}), 200)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/events", evtFinalReq, map[string]string{"X-Agent-ID": "ucla.b", "X-Bus-Signature": signPayload("secret-b", evtFinalBlob)}), 200)
 
 	blobHistory := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-1/messages", nil, map[string]string{
 		"Authorization": "Bearer " + testObserveToken,
@@ -183,7 +183,7 @@ func runContractAllEndpoints(t *testing.T, h http.Handler) {
 		t.Fatalf("expected history to include message: %s", string(blobHistory))
 	}
 
-	injectReq := map[string]any{"identity": "joel", "conversation_id": "conv-1", "to": "b", "body": "human note"}
+	injectReq := map[string]any{"identity": "joel", "conversation_id": "conv-1", "to": "ucla.b", "body": "human note"}
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", injectReq, map[string]string{
 		"Authorization": "Bearer " + testInjectToken,
 	}), 200)
@@ -264,10 +264,10 @@ func TestContractJSONSecretsSurviveRestartWithoutReregistration(t *testing.T) {
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts1.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+		"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts1.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+		"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
 	}, nil), http.StatusOK)
 	ts1.CloseClientConnections()
 	ts1.Close()
@@ -283,7 +283,7 @@ func TestContractJSONSecretsSurviveRestartWithoutReregistration(t *testing.T) {
 		ts2.Close()
 	}()
 
-	sendReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-json-secret-restart", "type": "request", "body": "after restart"}
+	sendReq := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-json-secret-restart", "type": "request", "body": "after restart"}
 	sendBlob, _ := json.Marshal(sendReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts2.URL+"/v1/messages", sendReq, map[string]string{
 		"X-Bus-Signature": signPayload("secret-a", sendBlob),
@@ -302,10 +302,10 @@ func TestContractSQLiteSecretsSurviveRestartWithoutReregistration(t *testing.T) 
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts1.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+		"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts1.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+		"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
 	}, nil), http.StatusOK)
 	ts1.CloseClientConnections()
 	ts1.Close()
@@ -325,7 +325,7 @@ func TestContractSQLiteSecretsSurviveRestartWithoutReregistration(t *testing.T) 
 		ts2.Close()
 	}()
 
-	sendReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-sqlite-secret-restart", "type": "request", "body": "after restart"}
+	sendReq := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-sqlite-secret-restart", "type": "request", "body": "after restart"}
 	sendBlob, _ := json.Marshal(sendReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts2.URL+"/v1/messages", sendReq, map[string]string{
 		"X-Bus-Signature": signPayload("secret-a", sendBlob),
@@ -341,7 +341,7 @@ func TestContractListAgentsDoesNotLeakSecrets(t *testing.T) {
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "agent-no-leak", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "supersecret-no-leak",
+		"agent_id": "ucla.agent-no-leak", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "supersecret-no-leak",
 	}, nil), http.StatusOK)
 	body := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/agents", nil, nil), http.StatusOK)
 	if bytes.Contains(body, []byte("supersecret-no-leak")) || bytes.Contains(body, []byte(`"secret"`)) {
@@ -358,26 +358,26 @@ func TestContractReregistrationRejectsSecretHijack(t *testing.T) {
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+		"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+		"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
 	}, nil), http.StatusOK)
 
 	conflict := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "attacker-secret",
+		"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "attacker-secret",
 	}, nil), http.StatusConflict)
 	if !bytes.Contains(conflict, []byte("re-registration requires proof of current secret")) {
 		t.Fatalf("unexpected conflict response: %s", string(conflict))
 	}
 
-	sendReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-hijack-old", "type": "request", "body": "old secret still works"}
+	sendReq := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-hijack-old", "type": "request", "body": "old secret still works"}
 	sendBlob, _ := json.Marshal(sendReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq, map[string]string{
 		"X-Bus-Signature": signPayload("secret-a", sendBlob),
 	}), http.StatusOK)
 
-	badReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-hijack-new", "type": "request", "body": "new secret must fail"}
+	badReq := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-hijack-new", "type": "request", "body": "new secret must fail"}
 	badBlob, _ := json.Marshal(badReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", badReq, map[string]string{
 		"X-Bus-Signature": signPayload("attacker-secret", badBlob),
@@ -393,25 +393,25 @@ func TestContractReregistrationRotationRequiresOldSecretSignature(t *testing.T) 
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+		"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+		"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
 	}, nil), http.StatusOK)
 
-	rotateReq := map[string]any{"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a-rotated"}
+	rotateReq := map[string]any{"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a-rotated"}
 	rotateBlob, _ := json.Marshal(rotateReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", rotateReq, map[string]string{
 		"X-Bus-Signature": signPayload("secret-a", rotateBlob),
 	}), http.StatusOK)
 
-	oldReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-rotation-old", "type": "request", "body": "old secret rejected"}
+	oldReq := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-rotation-old", "type": "request", "body": "old secret rejected"}
 	oldBlob, _ := json.Marshal(oldReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", oldReq, map[string]string{
 		"X-Bus-Signature": signPayload("secret-a", oldBlob),
 	}), http.StatusUnauthorized)
 
-	newReq := map[string]any{"to": "b", "from": "a", "request_id": "rid-rotation-new", "type": "request", "body": "new secret works"}
+	newReq := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-rotation-new", "type": "request", "body": "new secret works"}
 	newBlob, _ := json.Marshal(newReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", newReq, map[string]string{
 		"X-Bus-Signature": signPayload("secret-a-rotated", newBlob),
@@ -427,10 +427,10 @@ func TestContractReregistrationSameSecretStillIdempotent(t *testing.T) {
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-a", "version": "v1",
+		"agent_id": "ucla.a", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-a", "version": "v1",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-a", "version": "v2",
+		"agent_id": "ucla.a", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-a", "version": "v2",
 	}, nil), http.StatusOK)
 
 	body := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/agents", nil, nil), http.StatusOK)
@@ -442,7 +442,7 @@ func TestContractReregistrationSameSecretStillIdempotent(t *testing.T) {
 func TestContractLegacyEmptySecretReregistrationGrace(t *testing.T) {
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
 	store := bus.NewStore(contractConfig(now))
-	if _, err := store.RegisterAgent(bus.RegisterAgentInput{AgentID: "legacy", Mode: bus.AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := store.RegisterAgent(bus.RegisterAgentInput{AgentID: "ucla.legacy", Mode: bus.AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("seed legacy agent: %v", err)
 	}
 	ts := httptest.NewServer(NewServer(store))
@@ -453,7 +453,7 @@ func TestContractLegacyEmptySecretReregistrationGrace(t *testing.T) {
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "legacy", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-legacy",
+		"agent_id": "ucla.legacy", "capabilities": []string{"x"}, "mode": "pull", "ttl": 60, "secret": "secret-legacy",
 	}, nil), http.StatusOK)
 }
 
@@ -468,10 +468,10 @@ func TestContractPassportRegistrationRoundTrip(t *testing.T) {
 	}
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "legacy", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-legacy",
+		"agent_id": "ucla.legacy", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-legacy",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id":       "passport",
+		"agent_id":       "ucla.passport",
 		"mode":           "pull",
 		"capabilities":   []string{"x", "y"},
 		"secret":         "secret-passport",
@@ -505,9 +505,9 @@ func TestContractPassportRegistrationRoundTrip(t *testing.T) {
 	var legacy, passport map[string]any
 	for _, agent := range resp.Agents {
 		switch agent["agent_id"] {
-		case "legacy":
+		case "ucla.legacy":
 			legacy = agent
-		case "passport":
+		case "ucla.passport":
 			passport = agent
 		}
 	}
@@ -562,14 +562,14 @@ func TestContractPassportValidation(t *testing.T) {
 	}
 
 	invalidClass := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "bad-class", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret", "agent_class": "router",
+		"agent_id": "ucla.bad-class", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret", "agent_class": "router",
 	}, nil), http.StatusBadRequest)
 	if !bytes.Contains(invalidClass, []byte("agent_class must be worker or orchestrator")) {
 		t.Fatalf("unexpected invalid class response: %s", string(invalidClass))
 	}
 
 	invalidMutation := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "bad-mutation", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret", "mutation_class": "write",
+		"agent_id": "ucla.bad-mutation", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret", "mutation_class": "write",
 	}, nil), http.StatusBadRequest)
 	if !bytes.Contains(invalidMutation, []byte("mutation_class must be observe, recommend, or mutate")) {
 		t.Fatalf("unexpected invalid mutation response: %s", string(invalidMutation))
@@ -588,7 +588,7 @@ func TestContractPassportReregistrationUpdatesFields(t *testing.T) {
 
 	register := func(version, description, mutationClass, commit string, dirty bool, signReregistration bool) {
 		body := map[string]any{
-			"agent_id":       "passport",
+			"agent_id":       "ucla.passport",
 			"mode":           "pull",
 			"capabilities":   []string{"x"},
 			"secret":         "secret-passport",
@@ -701,14 +701,14 @@ func TestObserveSSECursorResume(t *testing.T) {
 		Transport: &http.Transport{DisableKeepAlives: true},
 	}
 
-	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{"agent_id": "a", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-a"}, nil), 200)
-	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{"agent_id": "b", "mode": "pull", "capabilities": []string{"y"}, "secret": "secret-b"}, nil), 200)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{"agent_id": "ucla.a", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-a"}, nil), 200)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{"agent_id": "ucla.b", "mode": "pull", "capabilities": []string{"y"}, "secret": "secret-b"}, nil), 200)
 
 	ctxObserve, cancelObserve := context.WithCancel(context.Background())
 	defer cancelObserve()
 	reqObserve, _ := http.NewRequestWithContext(ctxObserve, http.MethodGet, ts.URL+"/v1/observe", nil)
 	reqObserve.Close = true
-	reqObserve.Header.Set("X-Agent-ID", "a")
+	reqObserve.Header.Set("X-Agent-ID", "ucla.a")
 	reqObserve.Header.Set("X-Bus-Signature", signPayload("secret-a", []byte(reqObserve.URL.RawQuery)))
 	respObserve, err := c.Do(reqObserve)
 	if err != nil {
@@ -716,7 +716,7 @@ func TestObserveSSECursorResume(t *testing.T) {
 	}
 	defer respObserve.Body.Close()
 
-	sendReq1 := map[string]any{"to": "b", "from": "a", "request_id": "rid-sse-1", "type": "request", "body": "one"}
+	sendReq1 := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-sse-1", "type": "request", "body": "one"}
 	blob1, _ := json.Marshal(sendReq1)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq1, map[string]string{"X-Bus-Signature": signPayload("secret-a", blob1)}), 200)
 
@@ -733,7 +733,7 @@ func TestObserveSSECursorResume(t *testing.T) {
 		t.Fatalf("did not observe first message event")
 	}
 
-	sendReq2 := map[string]any{"to": "b", "from": "a", "request_id": "rid-sse-2", "type": "request", "body": "two"}
+	sendReq2 := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-sse-2", "type": "request", "body": "two"}
 	blob2, _ := json.Marshal(sendReq2)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq2, map[string]string{"X-Bus-Signature": signPayload("secret-a", blob2)}), 200)
 
@@ -745,7 +745,7 @@ func TestObserveSSECursorResume(t *testing.T) {
 	reqResume, _ := http.NewRequestWithContext(ctxResume, http.MethodGet, ts.URL+"/v1/observe", nil)
 	reqResume.Close = true
 	reqResume.Header.Set("Last-Event-ID", firstID)
-	reqResume.Header.Set("X-Agent-ID", "a")
+	reqResume.Header.Set("X-Agent-ID", "ucla.a")
 	reqResume.Header.Set("X-Bus-Signature", signPayload("secret-a", []byte(reqResume.URL.RawQuery)))
 	respResume, err := c.Do(reqResume)
 	if err != nil {
@@ -779,10 +779,10 @@ func TestContractInjectRequiresToken(t *testing.T) {
 	noTokenTS := httptest.NewServer(newContractServer())
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	mustStatus(t, doJSON(t, c, http.MethodPost, noTokenTS.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+		"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, noTokenTS.URL+"/v1/inject", map[string]any{
-		"identity": "joel", "to": "b", "body": "no token configured",
+		"identity": "joel", "to": "ucla.b", "body": "no token configured",
 	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusForbidden)
 	noTokenTS.Close()
 
@@ -793,10 +793,10 @@ func TestContractInjectRequiresToken(t *testing.T) {
 		ts.Close()
 	}()
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+		"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
 	}, nil), http.StatusOK)
 
-	injectReq := map[string]any{"identity": "joel", "to": "b", "body": "hello"}
+	injectReq := map[string]any{"identity": "joel", "to": "ucla.b", "body": "hello"}
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", injectReq, nil), http.StatusForbidden)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", injectReq, map[string]string{
 		"Authorization": "Bearer " + testInjectToken,
@@ -822,7 +822,7 @@ func TestContractObserveRequiresTokenOrAgentHMAC(t *testing.T) {
 		ts.Close()
 	}()
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+		"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
 	}, nil), http.StatusOK)
 
 	reqDenied, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/observe", nil)
@@ -858,7 +858,7 @@ func TestContractObserveRequiresTokenOrAgentHMAC(t *testing.T) {
 	_ = respQuery.Body.Close()
 
 	reqHMAC, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/observe?cursor=0", nil)
-	reqHMAC.Header.Set("X-Agent-ID", "a")
+	reqHMAC.Header.Set("X-Agent-ID", "ucla.a")
 	reqHMAC.Header.Set("X-Bus-Signature", signPayload("secret-a", []byte(reqHMAC.URL.RawQuery)))
 	respHMAC, err := c.Do(reqHMAC)
 	if err != nil {
@@ -883,26 +883,26 @@ func TestContractConversationReadsRequireObserveAuth(t *testing.T) {
 	}()
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+		"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
+		"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b",
 	}, nil), http.StatusOK)
 
 	convReq := map[string]any{
 		"conversation_id": "conv-private",
 		"title":           "private title",
-		"participants":    []string{"a", "b"},
+		"participants":    []string{"ucla.a", "ucla.b"},
 		"meta":            map[string]any{"sensitive": "yes"},
 	}
 	convBlob, _ := json.Marshal(convReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", convReq, map[string]string{
-		"X-Agent-ID":      "a",
+		"X-Agent-ID":      "ucla.a",
 		"X-Bus-Signature": signPayload("secret-a", convBlob),
 	}), http.StatusOK)
 
 	sendReq := map[string]any{
-		"to": "b", "from": "a", "conversation_id": "conv-private", "request_id": "rid-private", "type": "request", "body": "private body",
+		"to": "ucla.b", "from": "ucla.a", "conversation_id": "conv-private", "request_id": "rid-private", "type": "request", "body": "private body",
 	}
 	sendBlob, _ := json.Marshal(sendReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq, map[string]string{
@@ -927,13 +927,13 @@ func TestContractConversationReadsRequireObserveAuth(t *testing.T) {
 
 	listQuery := "participant=a"
 	mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations?"+listQuery, nil, map[string]string{
-		"X-Agent-ID":      "a",
+		"X-Agent-ID":      "ucla.a",
 		"X-Bus-Signature": signPayload("secret-a", []byte(listQuery)),
 	}), http.StatusOK)
 
 	historyQuery := "cursor=0"
 	mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-private/messages?"+historyQuery, nil, map[string]string{
-		"X-Agent-ID":      "a",
+		"X-Agent-ID":      "ucla.a",
 		"X-Bus-Signature": signPayload("secret-a", []byte(historyQuery)),
 	}), http.StatusOK)
 }
@@ -954,7 +954,7 @@ func TestContractConversationCreateRequiresTokenOrAgentHMAC(t *testing.T) {
 		ts.Close()
 	}()
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
+		"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a",
 	}, nil), http.StatusOK)
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", map[string]any{
@@ -964,10 +964,10 @@ func TestContractConversationCreateRequiresTokenOrAgentHMAC(t *testing.T) {
 		"conversation_id": "conv-token",
 	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusOK)
 
-	hmacReq := map[string]any{"conversation_id": "conv-hmac", "participants": []string{"a"}}
+	hmacReq := map[string]any{"conversation_id": "conv-hmac", "participants": []string{"ucla.a"}}
 	hmacBlob, _ := json.Marshal(hmacReq)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", hmacReq, map[string]string{
-		"X-Agent-ID":      "a",
+		"X-Agent-ID":      "ucla.a",
 		"X-Bus-Signature": signPayload("secret-a", hmacBlob),
 	}), http.StatusOK)
 }
@@ -995,14 +995,14 @@ func TestContractPushModeCallbackDelivery(t *testing.T) {
 	defer callback.Close()
 
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "a", "mode": "pull", "capabilities": []string{"orchestrator"}, "secret": "secret-a",
+		"agent_id": "ucla.a", "mode": "pull", "capabilities": []string{"orchestrator"}, "secret": "secret-a",
 	}, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "p", "mode": "push", "capabilities": []string{"worker"}, "callback_url": callback.URL, "secret": "secret-p",
+		"agent_id": "ucla.p", "mode": "push", "capabilities": []string{"worker"}, "callback_url": callback.URL, "secret": "secret-p",
 	}, nil), http.StatusOK)
 
 	sendReq := map[string]any{
-		"to": "p", "from": "a", "request_id": "rid-push-contract", "type": "request", "body": "push me",
+		"to": "ucla.p", "from": "ucla.a", "request_id": "rid-push-contract", "type": "request", "body": "push me",
 	}
 	sendBlob, _ := json.Marshal(sendReq)
 	body := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq, map[string]string{
@@ -1034,7 +1034,7 @@ func TestContractPushModeCallbackDelivery(t *testing.T) {
 
 func TestContractRegisterHonorsAgentAllowlist(t *testing.T) {
 	h := newContractServerWithEnv(t, map[string]string{
-		"AGENT_ALLOWLIST": "alpha,beta",
+		"AGENT_ALLOWLIST": "ucla.alpha,ucla.beta",
 	})
 	ts := httptest.NewServer(h)
 	defer func() {
@@ -1046,16 +1046,16 @@ func TestContractRegisterHonorsAgentAllowlist(t *testing.T) {
 	}
 
 	bodyDenied := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": "gamma", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-gamma",
+		"agent_id": "ucla.gamma", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-gamma",
 	}, nil), http.StatusUnauthorized)
 	if !bytes.Contains(bodyDenied, []byte("agent_id not allowlisted")) {
 		t.Fatalf("expected allowlist denial, got: %s", string(bodyDenied))
 	}
 
 	bodyAllowed := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
-		"agent_id": " alpha ", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-alpha",
+		"agent_id": " ucla.alpha ", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-alpha",
 	}, nil), http.StatusOK)
-	if !bytes.Contains(bodyAllowed, []byte(`"agent_id":"alpha"`)) {
+	if !bytes.Contains(bodyAllowed, []byte(`"agent_id":"ucla.alpha"`)) {
 		t.Fatalf("expected trimmed allowed agent id, got: %s", string(bodyAllowed))
 	}
 }
@@ -1074,23 +1074,23 @@ func TestContractInjectHonorsHumanAllowlist(t *testing.T) {
 		Transport: &http.Transport{DisableKeepAlives: true},
 	}
 
-	regA := map[string]any{"agent_id": "a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a"}
-	regB := map[string]any{"agent_id": "b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b"}
+	regA := map[string]any{"agent_id": "ucla.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-a"}
+	regB := map[string]any{"agent_id": "ucla.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-b"}
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", regA, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", regB, nil), http.StatusOK)
 	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", map[string]any{
-		"conversation_id": "conv-human", "participants": []string{"a", "b"},
+		"conversation_id": "conv-human", "participants": []string{"ucla.a", "ucla.b"},
 	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusOK)
 
 	denied := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", map[string]any{
-		"identity": "sam", "conversation_id": "conv-human", "to": "b", "body": "not allowed",
+		"identity": "sam", "conversation_id": "conv-human", "to": "ucla.b", "body": "not allowed",
 	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusUnauthorized)
 	if !bytes.Contains(denied, []byte("human identity not allowed")) {
 		t.Fatalf("expected human allowlist denial, got: %s", string(denied))
 	}
 
 	allowed := mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/inject", map[string]any{
-		"identity": "joel", "conversation_id": "conv-human", "to": "b", "body": "allowed",
+		"identity": "joel", "conversation_id": "conv-human", "to": "ucla.b", "body": "allowed",
 	}, map[string]string{"Authorization": "Bearer " + testInjectToken}), http.StatusOK)
 	if !bytes.Contains(allowed, []byte(`"ok":true`)) {
 		t.Fatalf("expected allowed inject response, got: %s", string(allowed))
@@ -1145,7 +1145,7 @@ func TestContractBodySizeCap(t *testing.T) {
 
 	big := strings.Repeat("x", 1024)
 	resp := doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", map[string]any{
-		"to": "b", "from": "a", "request_id": "r-big", "body": big,
+		"to": "ucla.b", "from": "ucla.a", "request_id": "r-big", "body": big,
 	}, nil)
 	blob := mustStatus(t, resp, 413)
 	var payload struct {
@@ -1164,7 +1164,7 @@ func TestContractBodySizeCap(t *testing.T) {
 	// Within the cap, requests proceed to normal auth/validation handling
 	// (401 here because the sender is unregistered), not 413.
 	resp = doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", map[string]any{
-		"to": "b", "from": "a", "request_id": "r-small", "body": "ok",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "r-small", "body": "ok",
 	}, nil)
 	mustStatus(t, resp, 401)
 }

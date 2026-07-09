@@ -50,14 +50,14 @@ func TestPushQueueDropsWhenFull(t *testing.T) {
 		PushWorkers:     1,
 	})
 	if _, err := s.RegisterAgent(RegisterAgentInput{
-		AgentID:    "sender",
+		AgentID:    "ucla.sender",
 		Mode:       AgentModePull,
 		TTLSeconds: 60,
 	}); err != nil {
 		t.Fatalf("register sender: %v", err)
 	}
 	if _, err := s.RegisterAgent(RegisterAgentInput{
-		AgentID:     "push-target",
+		AgentID:     "ucla.push-target",
 		Mode:        AgentModePush,
 		CallbackURL: callback.URL,
 		TTLSeconds:  60,
@@ -68,8 +68,8 @@ func TestPushQueueDropsWhenFull(t *testing.T) {
 	send := func(i int) {
 		t.Helper()
 		if _, _, err := s.SendMessage(SendMessageInput{
-			To:        "push-target",
-			From:      "sender",
+			To:        "ucla.push-target",
+			From:      "ucla.sender",
 			RequestID: fmt.Sprintf("rid-%d", i),
 			Type:      MessageTypeRequest,
 			Body:      "hello push",

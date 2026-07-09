@@ -25,8 +25,8 @@ func TestObserveTrimAndResume(t *testing.T) {
 
 	for i := 0; i < 6; i++ {
 		_, _, err := s.SendMessage(SendMessageInput{
-			To:        "b",
-			From:      "a",
+			To:        "ucla.b",
+			From:      "ucla.a",
 			RequestID: "rid-observe-" + strconv.Itoa(i),
 			Type:      MessageTypeRequest,
 			Body:      "hello",

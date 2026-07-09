@@ -26,7 +26,7 @@ func newRetentionStore(clock func() time.Time) *Store {
 
 func registerRetentionPair(t *testing.T, s *Store) {
 	t.Helper()
-	for _, id := range []string{"a", "b"} {
+	for _, id := range []string{"ucla.a", "ucla.b"} {
 		if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: id, Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
@@ -42,7 +42,7 @@ func TestSweepPrunesTerminalMessages(t *testing.T) {
 	registerRetentionPair(t, s)
 
 	msg, _, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "r1", Type: MessageTypeRequest, Body: "work", TTLSeconds: 1,
+		To: "ucla.b", From: "ucla.a", RequestID: "r1", Type: MessageTypeRequest, Body: "work", TTLSeconds: 1,
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -108,8 +108,8 @@ func TestSweepPrunesByMaxAgeBackstop(t *testing.T) {
 	s.messages["m-legacy"] = &Message{
 		MessageID: "m-legacy",
 		Type:      MessageTypeRequest,
-		From:      "a",
-		To:        "b",
+		From:      "ucla.a",
+		To:        "ucla.b",
 		Body:      "stuck",
 		State:     StateWaitingAck,
 		CreatedAt: current,
@@ -133,25 +133,25 @@ func TestPollInboxReclaimsDeliveredEvents(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		if _, _, err := s.SendMessage(SendMessageInput{
-			To: "b", From: "a", RequestID: fmt.Sprintf("r%d", i), Type: MessageTypeRequest, Body: "x",
+			To: "ucla.b", From: "ucla.a", RequestID: fmt.Sprintf("r%d", i), Type: MessageTypeRequest, Body: "x",
 		}); err != nil {
 			t.Fatalf("send %d: %v", i, err)
 		}
 	}
 
-	events, next, err := s.PollInbox(PollInboxInput{AgentID: "b", Cursor: 0})
+	events, next, err := s.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: 0})
 	if err != nil || len(events) != 2 || next != 2 {
 		t.Fatalf("first poll: events=%d next=%d err=%v", len(events), next, err)
 	}
 
 	// Second poll at the advanced cursor proves receipt; events reclaimed.
-	if _, _, err := s.PollInbox(PollInboxInput{AgentID: "b", Cursor: next}); err != nil {
+	if _, _, err := s.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: next}); err != nil {
 		t.Fatalf("second poll: %v", err)
 	}
 	s.mu.Lock()
-	inboxLen := len(s.inboxes["b"])
-	base := s.inboxBase["b"]
-	bytes := s.inboxBytes["b"]
+	inboxLen := len(s.inboxes["ucla.b"])
+	base := s.inboxBase["ucla.b"]
+	bytes := s.inboxBytes["ucla.b"]
 	s.mu.Unlock()
 	if inboxLen != 0 || base != 2 || bytes != 0 {
 		t.Fatalf("expected reclaimed inbox, got len=%d base=%d bytes=%d", inboxLen, base, bytes)
@@ -171,18 +171,18 @@ func TestInboxByteBudgetEvictsOldest(t *testing.T) {
 	body := strings.Repeat("x", 200) // each event > 264 bytes with overhead
 	for i := 0; i < 3; i++ {
 		if _, _, err := s.SendMessage(SendMessageInput{
-			To: "b", From: "a", RequestID: fmt.Sprintf("r%d", i), Type: MessageTypeRequest, Body: body,
+			To: "ucla.b", From: "ucla.a", RequestID: fmt.Sprintf("r%d", i), Type: MessageTypeRequest, Body: body,
 		}); err != nil {
 			t.Fatalf("send %d: %v", i, err)
 		}
 	}
 
 	s.mu.Lock()
-	inboxLen := len(s.inboxes["b"])
-	base := s.inboxBase["b"]
+	inboxLen := len(s.inboxes["ucla.b"])
+	base := s.inboxBase["ucla.b"]
 	var last InboxEvent
 	if inboxLen > 0 {
-		last = s.inboxes["b"][inboxLen-1]
+		last = s.inboxes["ucla.b"][inboxLen-1]
 	}
 	s.mu.Unlock()
 	if inboxLen != 1 || base != 2 {
@@ -203,7 +203,7 @@ func TestObserveByteBudgetEvictsOldest(t *testing.T) {
 	})
 
 	for i := 0; i < 3; i++ {
-		if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: fmt.Sprintf("agent-%d", i), Mode: AgentModePull, TTLSeconds: 60}); err != nil {
+		if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: fmt.Sprintf("ucla.agent-%d", i), Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 			t.Fatalf("register %d: %v", i, err)
 		}
 	}

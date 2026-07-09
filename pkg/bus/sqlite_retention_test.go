@@ -32,13 +32,13 @@ func TestSQLiteStartupPrune(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
 	}
-	for _, id := range []string{"a", "b"} {
+	for _, id := range []string{"ucla.a", "ucla.b"} {
 		if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: id, Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
 	}
 	msg, _, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "r1", Type: MessageTypeRequest, Body: "old work",
+		To: "ucla.b", From: "ucla.a", RequestID: "r1", Type: MessageTypeRequest, Body: "old work",
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -91,14 +91,14 @@ func TestSQLitePersistsTerminalAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
 	}
-	for _, id := range []string{"a", "b"} {
+	for _, id := range []string{"ucla.a", "ucla.b"} {
 		if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: id, Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
 	}
 	// Inform messages are terminal at creation.
 	msg, _, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "r1", Type: MessageTypeInform, Body: "done",
+		To: "ucla.b", From: "ucla.a", RequestID: "r1", Type: MessageTypeInform, Body: "done",
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)

@@ -48,6 +48,8 @@ type AgentMeta struct {
 
 type AgentInfo struct {
 	AgentID       string     `json:"agent_id"`
+	AllowedScopes []string   `json:"allowed_scopes,omitempty"`
+	SharedGrants  []string   `json:"shared_grants,omitempty"`
 	Capabilities  []string   `json:"capabilities"`
 	Version       string     `json:"version,omitempty"`
 	Description   string     `json:"description,omitempty"`
@@ -69,6 +71,8 @@ type ConversationInfo struct {
 type RegisterAgentRequest struct {
 	AgentID       string     `json:"agent_id"`
 	Secret        string     `json:"secret"`
+	AllowedScopes []string   `json:"allowed_scopes,omitempty"`
+	SharedGrants  []string   `json:"shared_grants,omitempty"`
 	Capabilities  []string   `json:"capabilities"`
 	Version       string     `json:"version,omitempty"`
 	Description   string     `json:"description,omitempty"`

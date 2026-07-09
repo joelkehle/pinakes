@@ -74,6 +74,7 @@ type Config struct {
 	// holding hundreds of thousands of retained messages. Defaults to 250ms.
 	SweepMinInterval time.Duration
 	Clock            func() time.Time
+	Logger           *log.Logger
 }
 
 type idempotencyEntry struct {
@@ -247,8 +248,11 @@ func NewStore(cfg Config) *Store {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger:    log.New(os.Stdout, "pinakes ", log.LstdFlags),
+		logger:    cfg.Logger,
 		pushQueue: make(chan pushJob, cfg.PushQueueSize),
+	}
+	if s.logger == nil {
+		s.logger = log.New(os.Stdout, "pinakes ", log.LstdFlags)
 	}
 
 	// Push workers are daemon goroutines for the life of the process. Store
@@ -271,6 +275,33 @@ func (s *Store) now() time.Time {
 
 func dedupeKey(from, to, requestID string) string {
 	return from + "\x1f" + to + "\x1f" + requestID
+}
+
+func (s *Store) logScopeDenied(action, identity, resource, reason string) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Printf("WARN scope denied action=%s identity=%s resource=%s reason=%s", action, identity, resource, reason)
+}
+
+func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) error {
+	scope, ok := ScopeOfName(resource)
+	if !ok {
+		s.logScopeDenied(action, agent.AgentID, resource, "unprefixed resource")
+		return newError(CodeValidation, "topic/queue name must be prefixed with personal., ucla., or shared.", false, 0)
+	}
+	if scope == ScopeShared {
+		if agentHasSharedGrant(agent) {
+			return nil
+		}
+		s.logScopeDenied(action, agent.AgentID, resource, "shared grant required")
+		return newError(CodeUnauthorized, "shared.* access requires explicit shared grant", false, 0)
+	}
+	if agentHasScope(agent, scope) {
+		return nil
+	}
+	s.logScopeDenied(action, agent.AgentID, resource, "scope not allowed")
+	return newError(CodeUnauthorized, "identity is not allowed to access this scope", false, 0)
 }
 
 func normalizeBuildInfo(in *BuildInfo) *BuildInfo {
@@ -721,6 +752,20 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if agentID == "" {
 		return nil, newError(CodeValidation, "agent_id is required", false, 0)
 	}
+	if _, ok := ScopeOfName(agentID); !ok {
+		return nil, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
+	}
+	allowedScopes, err := normalizeScopes(input.AllowedScopes)
+	if err != nil {
+		return nil, err
+	}
+	if len(allowedScopes) == 0 {
+		allowedScopes = agentAllowedScopes(agentID, nil)
+	}
+	sharedGrants, err := normalizeSharedGrants(input.SharedGrants)
+	if err != nil {
+		return nil, err
+	}
 	mode := input.Mode
 	if mode == "" {
 		mode = AgentModePull
@@ -752,6 +797,8 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 
 	agent := &Agent{
 		AgentID:       agentID,
+		AllowedScopes: allowedScopes,
+		SharedGrants:  sharedGrants,
 		Capabilities:  cloneStrings(input.Capabilities),
 		Version:       strings.TrimSpace(input.Version),
 		Description:   strings.TrimSpace(input.Description),
@@ -769,6 +816,9 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if existing, ok := s.agents[agentID]; ok {
 		agent.RegisteredAt = existing.RegisteredAt
 	}
+	if err := s.authorizeAgentForName(agent, "subscribe", agentID); err != nil {
+		return nil, err
+	}
 	s.agents[agentID] = agent
 	if _, ok := s.inboxes[agentID]; !ok {
 		s.inboxes[agentID] = []InboxEvent{}
@@ -779,9 +829,11 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	s.publishLocked(
 		ObserveAgentRegistered,
 		map[string]any{
-			"agent_id":     agent.AgentID,
-			"capabilities": agent.Capabilities,
-			"at":           now,
+			"agent_id":       agent.AgentID,
+			"allowed_scopes": agent.AllowedScopes,
+			"shared_grants":  agent.SharedGrants,
+			"capabilities":   agent.Capabilities,
+			"at":             now,
 		},
 		"",
 		[]string{agent.AgentID},
@@ -825,6 +877,14 @@ func (s *Store) ListAgents(capability string) []Agent {
 
 func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation, error) {
 	now := s.now()
+	for _, participant := range input.Participants {
+		if strings.TrimSpace(participant) == "" {
+			continue
+		}
+		if _, ok := ScopeOfName(participant); !ok {
+			return nil, newError(CodeValidation, "participants must be prefixed with personal., ucla., or shared.", false, 0)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(now)
@@ -875,8 +935,14 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 	if to == "" {
 		return nil, false, newError(CodeValidation, "to is required", false, 0)
 	}
+	if _, ok := ScopeOfName(to); !ok {
+		return nil, false, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
+	}
 	if from == "" {
 		return nil, false, newError(CodeValidation, "from is required", false, 0)
+	}
+	if _, ok := ScopeOfName(from); !ok {
+		return nil, false, newError(CodeValidation, "from must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if requestID == "" {
 		return nil, false, newError(CodeValidation, "request_id is required", false, 0)
@@ -904,6 +970,12 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 	sender, ok := s.agents[from]
 	if !ok || sender.Status != AgentStatusActive {
 		return nil, false, newError(CodeUnauthorized, "sender is not registered/active", false, 0)
+	}
+	if err := s.authorizeAgentForName(sender, "publish", from); err != nil {
+		return nil, false, err
+	}
+	if err := s.authorizeAgentForName(sender, "publish", to); err != nil {
+		return nil, false, err
 	}
 
 	target, ok := s.agents[to]
@@ -1047,6 +1119,9 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 	if agentID == "" {
 		return nil, 0, newError(CodeValidation, "agent_id is required", false, 0)
 	}
+	if _, ok := ScopeOfName(agentID); !ok {
+		return nil, 0, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
+	}
 
 	wait := input.Wait
 	if wait < 0 {
@@ -1066,6 +1141,10 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 		if !ok || agent.Status != AgentStatusActive {
 			s.mu.Unlock()
 			return nil, 0, newError(CodeUnauthorized, "agent is not registered/active", false, 0)
+		}
+		if err := s.authorizeAgentForName(agent, "subscribe", agentID); err != nil {
+			s.mu.Unlock()
+			return nil, 0, err
 		}
 
 		events := s.inboxes[agentID]
@@ -1300,6 +1379,11 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 	to := strings.TrimSpace(input.To)
 	if identity == "" || body == "" {
 		return nil, newError(CodeValidation, "identity and body are required", false, 0)
+	}
+	if to != "" {
+		if _, ok := ScopeOfName(to); !ok {
+			return nil, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
+		}
 	}
 	if len(s.humanAllowlist) > 0 {
 		if _, ok := s.humanAllowlist[identity]; !ok {

@@ -1,0 +1,134 @@
+package bus
+
+import (
+	"bytes"
+	"log"
+	"strings"
+	"testing"
+	"time"
+)
+
+func newScopeTestStore(logBuf *bytes.Buffer) *Store {
+	logger := log.New(logBuf, "", 0)
+	return NewStore(Config{
+		Clock: func() time.Time {
+			return time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
+		},
+		Logger: logger,
+	})
+}
+
+func mustRegisterScoped(t *testing.T, s *Store, agentID string, scopes, grants []string) {
+	t.Helper()
+	if _, err := s.RegisterAgent(RegisterAgentInput{
+		AgentID:       agentID,
+		AllowedScopes: scopes,
+		SharedGrants:  grants,
+		Mode:          AgentModePull,
+		TTLSeconds:    60,
+	}); err != nil {
+		t.Fatalf("register %s: %v", agentID, err)
+	}
+}
+
+func TestScopeMatrixForPublish(t *testing.T) {
+	cases := []struct {
+		name    string
+		from    string
+		scopes  []string
+		grants  []string
+		to      string
+		wantErr bool
+	}{
+		{name: "personal to personal", from: "personal.sender", scopes: []string{"personal"}, to: "personal.target"},
+		{name: "personal to ucla denied", from: "personal.sender", scopes: []string{"personal"}, to: "ucla.target", wantErr: true},
+		{name: "ucla to ucla", from: "ucla.sender", scopes: []string{"ucla"}, to: "ucla.target"},
+		{name: "ucla to personal denied", from: "ucla.sender", scopes: []string{"ucla"}, to: "personal.target", wantErr: true},
+		{name: "ucla with shared membership denied", from: "ucla.sender", scopes: []string{"ucla", "shared"}, to: "shared.target", wantErr: true},
+		{name: "ucla with shared grant allowed", from: "ucla.sender", scopes: []string{"ucla"}, grants: []string{"shared"}, to: "shared.target"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			s := newScopeTestStore(&logs)
+			mustRegisterScoped(t, s, tc.from, tc.scopes, tc.grants)
+			targetScope, _ := ScopeOfName(tc.to)
+			targetGrants := []string(nil)
+			if targetScope == ScopeShared {
+				targetGrants = []string{"shared"}
+			}
+			mustRegisterScoped(t, s, tc.to, []string{string(targetScope)}, targetGrants)
+
+			_, _, err := s.SendMessage(SendMessageInput{
+				From:      tc.from,
+				To:        tc.to,
+				RequestID: "rid",
+				Type:      MessageTypeRequest,
+				Body:      "hello",
+			})
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected send error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("send: %v", err)
+			}
+		})
+	}
+}
+
+func TestUCLAPublishToPersonalDeniedAndLogged(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "ucla.sender", []string{"ucla"}, nil)
+	mustRegisterScoped(t, s, "personal.target", []string{"personal"}, nil)
+
+	_, _, err := s.SendMessage(SendMessageInput{
+		From:      "ucla.sender",
+		To:        "personal.target",
+		RequestID: "rid-deny",
+		Type:      MessageTypeRequest,
+		Body:      "nope",
+	})
+	if err == nil {
+		t.Fatalf("expected scope denial")
+	}
+	if !strings.Contains(logs.String(), "scope denied") || !strings.Contains(logs.String(), "identity=ucla.sender") || !strings.Contains(logs.String(), "resource=personal.target") {
+		t.Fatalf("expected scope denial log, got %q", logs.String())
+	}
+}
+
+func TestUnprefixedQueueNamesRejected(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "worker", Mode: AgentModePull}); err == nil {
+		t.Fatalf("expected unprefixed registration to fail")
+	}
+	mustRegisterScoped(t, s, "ucla.sender", []string{"ucla"}, nil)
+	if _, _, err := s.SendMessage(SendMessageInput{
+		From:      "ucla.sender",
+		To:        "target",
+		RequestID: "rid-unprefixed",
+		Type:      MessageTypeRequest,
+		Body:      "hello",
+	}); err == nil {
+		t.Fatalf("expected unprefixed target to fail")
+	}
+}
+
+func TestSharedRequiresExplicitGrantForSubscribe(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	if _, err := s.RegisterAgent(RegisterAgentInput{
+		AgentID:       "shared.worker",
+		AllowedScopes: []string{"shared"},
+		Mode:          AgentModePull,
+		TTLSeconds:    60,
+	}); err == nil {
+		t.Fatalf("expected shared registration without grant to fail")
+	}
+	if !strings.Contains(logs.String(), "shared grant required") {
+		t.Fatalf("expected shared grant denial log, got %q", logs.String())
+	}
+	mustRegisterScoped(t, s, "shared.worker", []string{"shared"}, []string{"shared"})
+}

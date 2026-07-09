@@ -143,11 +143,11 @@ func mustSendMessage(t *testing.T, h http.Handler, fromSecret string, body map[s
 func TestEventsRequiresAuthAndActorHeader(t *testing.T) {
 	h := newServerForTest(t)
 
-	mustRegisterAgent(t, h, "a", "secret-a")
-	mustRegisterAgent(t, h, "b", "secret-b")
+	mustRegisterAgent(t, h, "ucla.a", "secret-a")
+	mustRegisterAgent(t, h, "ucla.b", "secret-b")
 
 	sendBody := map[string]any{
-		"to": "b", "from": "a", "request_id": "rid-http", "type": "request", "body": "do",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "rid-http", "type": "request", "body": "do",
 	}
 	messageID := mustSendMessage(t, h, "secret-a", sendBody)
 
@@ -163,21 +163,21 @@ func TestEventsRequiresAuthAndActorHeader(t *testing.T) {
 		t.Fatalf("expected 401, got %d body=%s", rrEvent.Code, rrEvent.Body.String())
 	}
 
-	rrEvent2 := postJSON(t, h, "/v1/events", eventBody, map[string]string{"X-Agent-ID": "b", "X-Bus-Signature": sign("secret-b", blobEvent)})
+	rrEvent2 := postJSON(t, h, "/v1/events", eventBody, map[string]string{"X-Agent-ID": "ucla.b", "X-Bus-Signature": sign("secret-b", blobEvent)})
 	if rrEvent2.Code != 200 {
 		t.Fatalf("expected 200, got %d body=%s", rrEvent2.Code, rrEvent2.Body.String())
 	}
 }
 
 func TestRegisterTrimsAgentIDBeforeAllowlistAndSecretLookup(t *testing.T) {
-	h := newServerForTestWithEnv(t, map[string]string{"AGENT_ALLOWLIST": "a,b"})
+	h := newServerForTestWithEnv(t, map[string]string{"AGENT_ALLOWLIST": "ucla.a,ucla.b"})
 
-	mustRegisterAgent(t, h, "  a  ", "secret-a")
-	mustRegisterAgent(t, h, "b", "secret-b")
+	mustRegisterAgent(t, h, "  ucla.a  ", "secret-a")
+	mustRegisterAgent(t, h, "ucla.b", "secret-b")
 
 	// If registration/secret keying is not normalized, this signed request fails.
 	sendBody := map[string]any{
-		"to": "b", "from": "a", "request_id": "rid-trim", "type": "request", "body": "ok",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "rid-trim", "type": "request", "body": "ok",
 	}
 	blob, _ := json.Marshal(sendBody)
 	rr := postJSON(t, h, "/v1/messages", sendBody, map[string]string{"X-Bus-Signature": sign("secret-a", blob)})
@@ -188,11 +188,11 @@ func TestRegisterTrimsAgentIDBeforeAllowlistAndSecretLookup(t *testing.T) {
 
 func TestMessagesRejectsTamperedSignature(t *testing.T) {
 	h := newServerForTest(t)
-	mustRegisterAgent(t, h, "a", "secret-a")
-	mustRegisterAgent(t, h, "b", "secret-b")
+	mustRegisterAgent(t, h, "ucla.a", "secret-a")
+	mustRegisterAgent(t, h, "ucla.b", "secret-b")
 
 	sendBody := map[string]any{
-		"to": "b", "from": "a", "request_id": "rid-badsig", "type": "request", "body": "do",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "rid-badsig", "type": "request", "body": "do",
 	}
 	blob, _ := json.Marshal(sendBody)
 	goodSig := sign("secret-a", blob)
@@ -206,11 +206,11 @@ func TestMessagesRejectsTamperedSignature(t *testing.T) {
 
 func TestMessagesAcceptsSHA256PrefixedSignature(t *testing.T) {
 	h := newServerForTest(t)
-	mustRegisterAgent(t, h, "a", "secret-a")
-	mustRegisterAgent(t, h, "b", "secret-b")
+	mustRegisterAgent(t, h, "ucla.a", "secret-a")
+	mustRegisterAgent(t, h, "ucla.b", "secret-b")
 
 	sendBody := map[string]any{
-		"to": "b", "from": "a", "request_id": "rid-prefix", "type": "request", "body": "do",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "rid-prefix", "type": "request", "body": "do",
 	}
 	blob, _ := json.Marshal(sendBody)
 	rr := postJSON(t, h, "/v1/messages", sendBody, map[string]string{"X-Bus-Signature": "sha256=" + sign("secret-a", blob)})
@@ -221,11 +221,11 @@ func TestMessagesAcceptsSHA256PrefixedSignature(t *testing.T) {
 
 func TestMessagesRejectsNonHexSignature(t *testing.T) {
 	h := newServerForTest(t)
-	mustRegisterAgent(t, h, "a", "secret-a")
-	mustRegisterAgent(t, h, "b", "secret-b")
+	mustRegisterAgent(t, h, "ucla.a", "secret-a")
+	mustRegisterAgent(t, h, "ucla.b", "secret-b")
 
 	sendBody := map[string]any{
-		"to": "b", "from": "a", "request_id": "rid-nonhex", "type": "request", "body": "do",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "rid-nonhex", "type": "request", "body": "do",
 	}
 	rr := postJSON(t, h, "/v1/messages", sendBody, map[string]string{"X-Bus-Signature": "not-hex"})
 	if rr.Code != http.StatusUnauthorized {
@@ -235,12 +235,12 @@ func TestMessagesRejectsNonHexSignature(t *testing.T) {
 
 func TestEventsRejectActorThatDoesNotOwnMessage(t *testing.T) {
 	h := newServerForTest(t)
-	mustRegisterAgent(t, h, "a", "secret-a")
-	mustRegisterAgent(t, h, "b", "secret-b")
-	mustRegisterAgent(t, h, "c", "secret-c")
+	mustRegisterAgent(t, h, "ucla.a", "secret-a")
+	mustRegisterAgent(t, h, "ucla.b", "secret-b")
+	mustRegisterAgent(t, h, "ucla.c", "secret-c")
 
 	messageID := mustSendMessage(t, h, "secret-a", map[string]any{
-		"to": "b", "from": "a", "request_id": "rid-owner", "type": "request", "body": "job",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "rid-owner", "type": "request", "body": "job",
 	})
 	eventBody := map[string]any{
 		"message_id": messageID,
@@ -249,7 +249,7 @@ func TestEventsRejectActorThatDoesNotOwnMessage(t *testing.T) {
 	}
 	blob, _ := json.Marshal(eventBody)
 	rr := postJSON(t, h, "/v1/events", eventBody, map[string]string{
-		"X-Agent-ID":      "c",
+		"X-Agent-ID":      "ucla.c",
 		"X-Bus-Signature": sign("secret-c", blob),
 	})
 	if rr.Code != http.StatusUnauthorized {
@@ -259,22 +259,22 @@ func TestEventsRejectActorThatDoesNotOwnMessage(t *testing.T) {
 
 func TestInboxRejectsSignatureForDifferentRawQuery(t *testing.T) {
 	h := newServerForTest(t)
-	mustRegisterAgent(t, h, "a", "secret-a")
-	mustRegisterAgent(t, h, "b", "secret-b")
+	mustRegisterAgent(t, h, "ucla.a", "secret-a")
+	mustRegisterAgent(t, h, "ucla.b", "secret-b")
 
 	mustSendMessage(t, h, "secret-a", map[string]any{
-		"to": "b", "from": "a", "request_id": "rid-inbox", "type": "request", "body": "payload",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "rid-inbox", "type": "request", "body": "payload",
 	})
 
 	goodQuery := url.Values{
-		"agent_id": []string{"b"},
+		"agent_id": []string{"ucla.b"},
 		"cursor":   []string{"0"},
 		"wait":     []string{"0"},
 	}.Encode()
 	sig := sign("secret-b", []byte(goodQuery))
 
 	// Different raw query ordering should not validate.
-	tamperedRawQuery := "cursor=0&wait=0&agent_id=b"
+	tamperedRawQuery := "cursor=0&wait=0&agent_id=ucla.b"
 	rr := getWithHeaders(t, h, "/v1/inbox?"+tamperedRawQuery, map[string]string{"X-Bus-Signature": sig})
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
@@ -284,7 +284,7 @@ func TestInboxRejectsSignatureForDifferentRawQuery(t *testing.T) {
 func TestTopLevelHealthMatchesV1Health(t *testing.T) {
 	h := newServerForTest(t)
 
-	mustRegisterAgent(t, h, "a", "secret-a")
+	mustRegisterAgent(t, h, "ucla.a", "secret-a")
 	rrTop := getWithHeaders(t, h, "/health", nil)
 	rrV1 := getWithHeaders(t, h, "/v1/health", nil)
 	if rrTop.Code != http.StatusOK || rrV1.Code != http.StatusOK {
@@ -297,7 +297,7 @@ func TestTopLevelHealthMatchesV1Health(t *testing.T) {
 
 func TestMetricsExposesPrometheusText(t *testing.T) {
 	h := newServerForTest(t)
-	mustRegisterAgent(t, h, "a", "secret-a")
+	mustRegisterAgent(t, h, "ucla.a", "secret-a")
 
 	rr := getWithHeaders(t, h, "/metrics", nil)
 	if rr.Code != http.StatusOK {
@@ -344,17 +344,17 @@ func TestNewServerFromEnvFailsWhenAllowlistFileMissing(t *testing.T) {
 }
 
 func TestNewServerFromEnvFallsBackToEnvAllowlistWhenFileUnset(t *testing.T) {
-	h := newServerForTestWithEnv(t, map[string]string{"AGENT_ALLOWLIST": "alpha,beta"})
+	h := newServerForTestWithEnv(t, map[string]string{"AGENT_ALLOWLIST": "ucla.alpha,ucla.beta"})
 
 	denied := postJSON(t, h, "/v1/agents/register", map[string]any{
-		"agent_id": "gamma", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-gamma",
+		"agent_id": "ucla.gamma", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-gamma",
 	}, nil)
 	if denied.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%s", denied.Code, denied.Body.String())
 	}
 
 	allowed := postJSON(t, h, "/v1/agents/register", map[string]any{
-		"agent_id": "alpha", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-alpha",
+		"agent_id": "ucla.alpha", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-alpha",
 	}, nil)
 	if allowed.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", allowed.Code, allowed.Body.String())
@@ -384,7 +384,7 @@ func (b *syncLogBuffer) String() string {
 func TestAllowlistWatcherReloadsAtomicRenameAndPreservesLiveAgent(t *testing.T) {
 	dir := t.TempDir()
 	allowlistPath := filepath.Join(dir, "allowlist.txt")
-	writeAllowlistFileAtomically(t, allowlistPath, "# comment", "a", "b")
+	writeAllowlistFileAtomically(t, allowlistPath, "# comment", "ucla.a", "ucla.b")
 
 	server := newServerForTestWithEnv(t, map[string]string{"ALLOWLIST_FILE": allowlistPath})
 	var logBuf syncLogBuffer
@@ -396,23 +396,23 @@ func TestAllowlistWatcherReloadsAtomicRenameAndPreservesLiveAgent(t *testing.T) 
 		t.Fatalf("watch allowlist: %v", err)
 	}
 
-	mustRegisterAgent(t, server, "a", "secret-a")
-	mustRegisterAgent(t, server, "b", "secret-b")
+	mustRegisterAgent(t, server, "ucla.a", "secret-a")
+	mustRegisterAgent(t, server, "ucla.b", "secret-b")
 
-	writeAllowlistFileAtomically(t, allowlistPath, "b", "c")
+	writeAllowlistFileAtomically(t, allowlistPath, "ucla.b", "ucla.c")
 	waitFor(t, "allowlist add/remove reload", func() bool {
-		return server.isAgentAllowed("c") && !server.isAgentAllowed("a")
+		return server.isAgentAllowed("ucla.c") && !server.isAgentAllowed("ucla.a")
 	})
 
 	rrReRegister := postJSON(t, server, "/v1/agents/register", map[string]any{
-		"agent_id": "a", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-a-2",
+		"agent_id": "ucla.a", "mode": "pull", "capabilities": []string{"x"}, "secret": "secret-a-2",
 	}, nil)
 	if rrReRegister.Code != http.StatusUnauthorized {
 		t.Fatalf("expected re-register denial after removal, got %d body=%s", rrReRegister.Code, rrReRegister.Body.String())
 	}
 
 	sendBody := map[string]any{
-		"to": "b", "from": "a", "request_id": "rid-live-agent", "type": "request", "body": "still works",
+		"to": "ucla.b", "from": "ucla.a", "request_id": "rid-live-agent", "type": "request", "body": "still works",
 	}
 	blob, _ := json.Marshal(sendBody)
 	rrSend := postJSON(t, server, "/v1/messages", sendBody, map[string]string{"X-Bus-Signature": sign("secret-a", blob)})
@@ -428,7 +428,7 @@ func TestAllowlistWatcherReloadsAtomicRenameAndPreservesLiveAgent(t *testing.T) 
 func TestAllowlistWatcherKeepsLastGoodSetOnReloadError(t *testing.T) {
 	dir := t.TempDir()
 	allowlistPath := filepath.Join(dir, "allowlist.txt")
-	writeAllowlistFileAtomically(t, allowlistPath, "a", "b")
+	writeAllowlistFileAtomically(t, allowlistPath, "ucla.a", "ucla.b")
 
 	server := newServerForTestWithEnv(t, map[string]string{"ALLOWLIST_FILE": allowlistPath})
 	var logBuf syncLogBuffer
@@ -448,7 +448,7 @@ func TestAllowlistWatcherKeepsLastGoodSetOnReloadError(t *testing.T) {
 	waitFor(t, "reload error log", func() bool {
 		return strings.Contains(logBuf.String(), "allowlist reload failed")
 	})
-	if !server.isAgentAllowed("a") || !server.isAgentAllowed("b") {
+	if !server.isAgentAllowed("ucla.a") || !server.isAgentAllowed("ucla.b") {
 		t.Fatalf("expected last-good allowset to remain active after reload failure")
 	}
 }

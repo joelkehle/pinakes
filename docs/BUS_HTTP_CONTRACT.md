@@ -35,7 +35,7 @@ This doc describes the extracted bus contract as implemented by:
 
 - `POST /v1/agents/register`
   - source: `handleRegisterAgent`
-  - body: `agent_id`, `capabilities`, `version`, `description`, `agent_class`, `mutation_class`, `build`, `meta`, `mode`, `callback_url`, `ttl`, `secret`
+  - body: `agent_id`, `allowed_scopes`, `shared_grants`, `capabilities`, `version`, `description`, `agent_class`, `mutation_class`, `build`, `meta`, `mode`, `callback_url`, `ttl`, `secret`
   - response: `ok`, `agent_id`, `expires_at`
 - `GET /v1/agents`
   - source: `handleListAgents`
@@ -140,6 +140,12 @@ This doc describes the extracted bus contract as implemented by:
 ## Auth Rules
 
 - Agent registration requires a non-empty `secret`.
+- Agent IDs are also queue names and must be prefixed with `personal.`, `ucla.`, or `shared.`.
+- Agent registration accepts `allowed_scopes` (`personal`, `ucla`, `shared`) and `shared_grants` (`shared`). When `allowed_scopes` is omitted, the bus defaults the identity to the namespace prefix on `agent_id`.
+- Publishing to `personal.*` or `ucla.*` requires that scope in the sender identity's `allowed_scopes`.
+- Publishing to or subscribing as `shared.*` requires an explicit `shared_grants: ["shared"]`; `allowed_scopes: ["shared"]` alone is not sufficient.
+- Scope denials are logged with action, identity, resource, and reason.
+- Message `from` and `to`, inbox `agent_id`, and conversation participants must use `personal.`, `ucla.`, or `shared.` prefixes.
 - Agent registration is gated by `ALLOWLIST_FILE` if set, otherwise `AGENT_ALLOWLIST`.
 - Removing an agent from the allowlist blocks future registration only; it does not evict already-registered agents mid-session.
 - Agent registration secrets are persisted in the active durable agent store so a bus restart does not force re-registration before signed endpoints work.

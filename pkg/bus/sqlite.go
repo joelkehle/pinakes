@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,8 @@ type SQLiteStore struct {
 const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS agents (
 	agent_id      TEXT PRIMARY KEY,
+	allowed_scopes TEXT NOT NULL DEFAULT '[]',
+	shared_grants TEXT NOT NULL DEFAULT '[]',
 	capabilities  TEXT NOT NULL DEFAULT '[]',
 	secret        TEXT NOT NULL DEFAULT '',
 	version       TEXT NOT NULL DEFAULT '',
@@ -98,6 +102,12 @@ CREATE TABLE IF NOT EXISTS counters (
 `
 
 func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
+	if dir := filepath.Dir(dbPath); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create sqlite db dir: %w", err)
+		}
+	}
+
 	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -224,6 +234,8 @@ func ensureAgentColumns(db *sqlx.DB) error {
 		sql  string
 	}{
 		{name: "secret", sql: `ALTER TABLE agents ADD COLUMN secret TEXT NOT NULL DEFAULT ''`},
+		{name: "allowed_scopes", sql: `ALTER TABLE agents ADD COLUMN allowed_scopes TEXT NOT NULL DEFAULT '[]'`},
+		{name: "shared_grants", sql: `ALTER TABLE agents ADD COLUMN shared_grants TEXT NOT NULL DEFAULT '[]'`},
 		{name: "version", sql: `ALTER TABLE agents ADD COLUMN version TEXT NOT NULL DEFAULT ''`},
 		{name: "agent_class", sql: `ALTER TABLE agents ADD COLUMN agent_class TEXT NOT NULL DEFAULT ''`},
 		{name: "mutation_class", sql: `ALTER TABLE agents ADD COLUMN mutation_class TEXT NOT NULL DEFAULT ''`},
@@ -324,18 +336,20 @@ func (s *SQLiteStore) loadCounters() error {
 }
 
 func (s *SQLiteStore) loadAgents() error {
-	rows, err := s.db.Query("SELECT agent_id, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds FROM agents")
+	rows, err := s.db.Query("SELECT agent_id, allowed_scopes, shared_grants, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds FROM agents")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var a Agent
-		var capsJSON, registeredAt, expiresAt string
+		var scopesJSON, grantsJSON, capsJSON, registeredAt, expiresAt string
 		var buildJSON, metaJSON sql.NullString
-		if err := rows.Scan(&a.AgentID, &capsJSON, &a.Version, &a.Description, &a.AgentClass, &a.MutationClass, &buildJSON, &metaJSON, &a.Mode, &a.CallbackURL, &a.Status, &registeredAt, &expiresAt, &a.TTLSeconds); err != nil {
+		if err := rows.Scan(&a.AgentID, &scopesJSON, &grantsJSON, &capsJSON, &a.Version, &a.Description, &a.AgentClass, &a.MutationClass, &buildJSON, &metaJSON, &a.Mode, &a.CallbackURL, &a.Status, &registeredAt, &expiresAt, &a.TTLSeconds); err != nil {
 			return err
 		}
+		_ = json.Unmarshal([]byte(scopesJSON), &a.AllowedScopes)
+		_ = json.Unmarshal([]byte(grantsJSON), &a.SharedGrants)
 		_ = json.Unmarshal([]byte(capsJSON), &a.Capabilities)
 		if buildJSON.Valid && buildJSON.String != "" {
 			a.Build = &BuildInfo{}
@@ -481,9 +495,11 @@ type sqliteExec interface {
 }
 
 func saveAgentTo(exec sqliteExec, a *Agent) error {
-	_, err := exec.Exec(`INSERT INTO agents (agent_id, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := exec.Exec(`INSERT INTO agents (agent_id, allowed_scopes, shared_grants, capabilities, version, description, agent_class, mutation_class, build, meta, mode, callback_url, status, registered_at, expires_at, ttl_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(agent_id) DO UPDATE SET
+			allowed_scopes=excluded.allowed_scopes,
+			shared_grants=excluded.shared_grants,
 			capabilities=excluded.capabilities,
 			version=excluded.version,
 			description=excluded.description,
@@ -498,6 +514,8 @@ func saveAgentTo(exec sqliteExec, a *Agent) error {
 			expires_at=excluded.expires_at,
 			ttl_seconds=excluded.ttl_seconds`,
 		a.AgentID,
+		marshalJSON(a.AllowedScopes),
+		marshalJSON(a.SharedGrants),
 		marshalJSON(a.Capabilities),
 		a.Version,
 		a.Description,

@@ -31,17 +31,17 @@ func TestRegisterAgentWithDescriptionSendsDescription(t *testing.T) {
 			t.Fatalf("decode register body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"agent_id":"travel-agent"}`))
+		_, _ = w.Write([]byte(`{"ok":true,"agent_id":"ucla.travel-agent"}`))
 	}))
 	defer srv.Close()
 
 	client := NewClient(srv.URL)
-	err := client.RegisterAgentWithDescription(context.Background(), "travel-agent", "secret", []string{"query:travel-status"}, "Travel inbox agent for flights, trips, and hotels.")
+	err := client.RegisterAgentWithDescription(context.Background(), "ucla.travel-agent", "secret", []string{"query:travel-status"}, "Travel inbox agent for flights, trips, and hotels.")
 	if err != nil {
 		t.Fatalf("RegisterAgentWithDescription() error = %v", err)
 	}
 
-	if got.AgentID != "travel-agent" {
+	if got.AgentID != "ucla.travel-agent" {
 		t.Fatalf("agent_id = %q, want travel-agent", got.AgentID)
 	}
 	if got.Description != "Travel inbox agent for flights, trips, and hotels." {
@@ -67,13 +67,13 @@ func TestRegisterAgentWithPassportSendsPassportFields(t *testing.T) {
 			t.Fatalf("decode register body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"agent_id":"travel-agent"}`))
+		_, _ = w.Write([]byte(`{"ok":true,"agent_id":"ucla.travel-agent"}`))
 	}))
 	defer srv.Close()
 
 	client := NewClient(srv.URL)
 	err := client.RegisterAgentWithPassport(context.Background(), RegisterAgentRequest{
-		AgentID:       "travel-agent",
+		AgentID:       "ucla.travel-agent",
 		Secret:        "secret",
 		Capabilities:  []string{"query:travel-status"},
 		Version:       "v0.5.0",
@@ -123,7 +123,7 @@ func TestListAgentsDecodesDescription(t *testing.T) {
 			t.Fatalf("path = %s, want /v1/agents", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"agents":[{"agent_id":"polsia-agent","capabilities":["query:polsia-status"],"version":"v0.5.0","description":"Polsia status reports and action items.","agent_class":"worker","mutation_class":"observe","build":{"commit":"abc1234","dirty":false},"meta":{"owner":"pinakes","repo":"github.com/joelkehle/pinakes","health_url":"http://polsia-agent/health","dependencies":["gmail-api"]},"status":"active"}]}`))
+		_, _ = w.Write([]byte(`{"agents":[{"agent_id":"ucla.polsia-agent","capabilities":["query:polsia-status"],"version":"v0.5.0","description":"Polsia status reports and action items.","agent_class":"worker","mutation_class":"observe","build":{"commit":"abc1234","dirty":false},"meta":{"owner":"pinakes","repo":"github.com/joelkehle/pinakes","health_url":"http://polsia-agent/health","dependencies":["gmail-api"]},"status":"active"}]}`))
 	}))
 	defer srv.Close()
 

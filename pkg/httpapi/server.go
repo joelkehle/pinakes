@@ -400,6 +400,8 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		AgentID       string         `json:"agent_id"`
+		AllowedScopes []string       `json:"allowed_scopes"`
+		SharedGrants  []string       `json:"shared_grants"`
 		Capabilities  []string       `json:"capabilities"`
 		Version       string         `json:"version"`
 		Description   string         `json:"description"`
@@ -432,6 +434,8 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 
 	agent, err := s.store.RegisterAgent(bus.RegisterAgentInput{
 		AgentID:       req.AgentID,
+		AllowedScopes: req.AllowedScopes,
+		SharedGrants:  req.SharedGrants,
 		Capabilities:  req.Capabilities,
 		Version:       req.Version,
 		Description:   req.Description,

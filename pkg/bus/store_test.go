@@ -32,10 +32,10 @@ func newTestStore(t *testing.T) (*Store, *time.Time) {
 
 func registerPair(t *testing.T, s *Store, ttlA, ttlB int) {
 	t.Helper()
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: ttlA}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: ttlA}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: ttlB}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: ttlB}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 }
@@ -45,7 +45,7 @@ func TestSendMessageIdempotency(t *testing.T) {
 	registerPair(t, s, 60, 60)
 
 	m1, dup1, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-1", Type: MessageTypeRequest, Body: "hello",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-1", Type: MessageTypeRequest, Body: "hello",
 	})
 	if err != nil {
 		t.Fatalf("send1: %v", err)
@@ -55,7 +55,7 @@ func TestSendMessageIdempotency(t *testing.T) {
 	}
 
 	m2, dup2, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-1", Type: MessageTypeRequest, Body: "hello again",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-1", Type: MessageTypeRequest, Body: "hello again",
 	})
 	if err != nil {
 		t.Fatalf("send2: %v", err)
@@ -67,7 +67,7 @@ func TestSendMessageIdempotency(t *testing.T) {
 		t.Fatalf("expected same message_id, got %s vs %s", m1.MessageID, m2.MessageID)
 	}
 
-	events, _, err := s.PollInbox(PollInboxInput{AgentID: "b", Cursor: 0, Wait: 0})
+	events, _, err := s.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: 0, Wait: 0})
 	if err != nil {
 		t.Fatalf("poll inbox: %v", err)
 	}
@@ -81,14 +81,14 @@ func TestEventOwnershipEnforced(t *testing.T) {
 	registerPair(t, s, 60, 60)
 
 	msg, _, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-2", Type: MessageTypeRequest, Body: "work",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-2", Type: MessageTypeRequest, Body: "work",
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
 	err = s.PostEvent(EventInput{
-		ActorAgentID: "a",
+		ActorAgentID: "ucla.a",
 		MessageID:    msg.MessageID,
 		Type:         "progress",
 		Body:         "doing",
@@ -110,19 +110,19 @@ func TestProgressRateLimit(t *testing.T) {
 	registerPair(t, s, 60, 60)
 
 	msg, _, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-3", Type: MessageTypeRequest, Body: "work",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-3", Type: MessageTypeRequest, Body: "work",
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
-	if err := s.Ack(AckInput{AgentID: "b", MessageID: msg.MessageID, Status: "accepted"}); err != nil {
+	if err := s.Ack(AckInput{AgentID: "ucla.b", MessageID: msg.MessageID, Status: "accepted"}); err != nil {
 		t.Fatalf("ack: %v", err)
 	}
-	if err := s.PostEvent(EventInput{ActorAgentID: "b", MessageID: msg.MessageID, Type: "progress", Body: "10%"}); err != nil {
+	if err := s.PostEvent(EventInput{ActorAgentID: "ucla.b", MessageID: msg.MessageID, Type: "progress", Body: "10%"}); err != nil {
 		t.Fatalf("progress1: %v", err)
 	}
-	if err := s.PostEvent(EventInput{ActorAgentID: "b", MessageID: msg.MessageID, Type: "progress", Body: "20%"}); err == nil {
+	if err := s.PostEvent(EventInput{ActorAgentID: "ucla.b", MessageID: msg.MessageID, Type: "progress", Body: "20%"}); err == nil {
 		t.Fatalf("expected rate limit error")
 	} else {
 		be, ok := err.(*Error)
@@ -132,7 +132,7 @@ func TestProgressRateLimit(t *testing.T) {
 	}
 
 	*now = now.Add(3 * time.Second)
-	if err := s.PostEvent(EventInput{ActorAgentID: "b", MessageID: msg.MessageID, Type: "progress", Body: "30%"}); err != nil {
+	if err := s.PostEvent(EventInput{ActorAgentID: "ucla.b", MessageID: msg.MessageID, Type: "progress", Body: "30%"}); err != nil {
 		t.Fatalf("progress after delay: %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestExpiredTargetGraceThenError(t *testing.T) {
 
 	*now = now.Add(2 * time.Second)
 	msg, _, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-4", Type: MessageTypeRequest, Body: "queued",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-4", Type: MessageTypeRequest, Body: "queued",
 	})
 	if err != nil {
 		t.Fatalf("send while within grace: %v", err)
@@ -177,15 +177,15 @@ func TestPushModeRetriesToCallback(t *testing.T) {
 	}))
 	defer callback.Close()
 
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "p", Mode: AgentModePush, CallbackURL: callback.URL, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.p", Mode: AgentModePush, CallbackURL: callback.URL, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register p: %v", err)
 	}
 	if _, _, err := s.SendMessage(SendMessageInput{
-		To:        "p",
-		From:      "a",
+		To:        "ucla.p",
+		From:      "ucla.a",
 		RequestID: "rid-push",
 		Type:      MessageTypeRequest,
 		Body:      "hello push",
@@ -222,7 +222,7 @@ func TestConcurrentIdempotentSendSingleDelivery(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			m, dup, err := s.SendMessage(SendMessageInput{
-				To: "b", From: "a", RequestID: "rid-concurrent", Type: MessageTypeRequest, Body: "hello",
+				To: "ucla.b", From: "ucla.a", RequestID: "rid-concurrent", Type: MessageTypeRequest, Body: "hello",
 			})
 			if err != nil {
 				out <- result{err: err}
@@ -252,7 +252,7 @@ func TestConcurrentIdempotentSendSingleDelivery(t *testing.T) {
 		t.Fatalf("expected exactly one non-duplicate send, got %d", nonDup)
 	}
 
-	events, _, err := s.PollInbox(PollInboxInput{AgentID: "b", Cursor: 0, Wait: 0})
+	events, _, err := s.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: 0, Wait: 0})
 	if err != nil {
 		t.Fatalf("poll inbox: %v", err)
 	}
@@ -280,14 +280,14 @@ func TestInboxCursorAfterTrim(t *testing.T) {
 
 	for i := 1; i <= 5; i++ {
 		_, _, err := s.SendMessage(SendMessageInput{
-			To: "b", From: "a", RequestID: "rid-trim-" + strconv.Itoa(i), Type: MessageTypeRequest, Body: "msg",
+			To: "ucla.b", From: "ucla.a", RequestID: "rid-trim-" + strconv.Itoa(i), Type: MessageTypeRequest, Body: "msg",
 		})
 		if err != nil {
 			t.Fatalf("send %d: %v", i, err)
 		}
 	}
 
-	events, next, err := s.PollInbox(PollInboxInput{AgentID: "b", Cursor: 0, Wait: 0})
+	events, next, err := s.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: 0, Wait: 0})
 	if err != nil {
 		t.Fatalf("poll inbox: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestAckTimeoutTransitionsToErrorOnSweep(t *testing.T) {
 	registerPair(t, s, 60, 60)
 
 	msg, _, err := s.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-ack-timeout", Type: MessageTypeRequest, Body: "hello",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-ack-timeout", Type: MessageTypeRequest, Body: "hello",
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
