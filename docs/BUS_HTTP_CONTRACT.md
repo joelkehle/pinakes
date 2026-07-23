@@ -221,10 +221,12 @@ This doc describes the extracted bus contract as implemented by:
   - default: `compat`
   - `compat` accepts legacy unprefixed IDs and assigns them `BUS_LEGACY_SCOPE`
   - `strict` rejects unprefixed IDs; intended for the final cutover after downstream agents and allowlists migrate
+  - any other non-empty value fails process startup; it never silently weakens to `compat`
 - `BUS_LEGACY_SCOPE`
   - scope assigned to unprefixed IDs while `BUS_NAMESPACE_MODE=compat`
   - supported values: `personal`, `ucla`
   - default: `ucla`
+  - any other non-empty value fails process startup
 - `SHARED_GRANT_AGENTS`
   - comma-separated agent IDs that receive explicit `shared.*` access
   - empty/unset means no identity receives `shared.*` access from registration claims alone
