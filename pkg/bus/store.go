@@ -368,6 +368,25 @@ func (s *Store) actorCanAccessConversation(actor string, conv *Conversation) boo
 	return s.actorCanAccessAllNames(actor, conv.Participants)
 }
 
+func (s *Store) authorizeActorForNames(actor, action string, names []string) error {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return nil
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if s.agentCanAccessName(actor, name) {
+			continue
+		}
+		s.logScopeDenied(action, actor, name, "scope not allowed")
+		return newError(CodeUnauthorized, "identity is not allowed to access this scope", false, 0)
+	}
+	return nil
+}
+
 func normalizeBuildInfo(in *BuildInfo) *BuildInfo {
 	if in == nil {
 		return nil
@@ -608,14 +627,23 @@ func (s *Store) publishLocked(eventType EventType, data any, conversationID stri
 	s.signalObserveLocked()
 }
 
-func (s *Store) ensureConversationLocked(input CreateConversationInput, now time.Time) *Conversation {
+func (s *Store) ensureConversationLocked(input CreateConversationInput, now time.Time) (*Conversation, error) {
 	id := strings.TrimSpace(input.ConversationID)
 	if id == "" {
 		s.nextConversationID++
 		id = fmt.Sprintf("c-%06d", s.nextConversationID)
 	}
 	if existing, ok := s.conversations[id]; ok {
-		return existing
+		if err := s.authorizeActorForNames(input.ActorAgentID, "conversation_reuse", existing.Participants); err != nil {
+			return nil, err
+		}
+		if err := s.authorizeActorForNames(input.ActorAgentID, "conversation_reuse", input.Participants); err != nil {
+			return nil, err
+		}
+		return existing, nil
+	}
+	if err := s.authorizeActorForNames(input.ActorAgentID, "conversation_create", input.Participants); err != nil {
+		return nil, err
 	}
 	c := &Conversation{
 		ConversationID: id,
@@ -627,7 +655,7 @@ func (s *Store) ensureConversationLocked(input CreateConversationInput, now time
 		Meta:           input.Meta,
 	}
 	s.conversations[id] = c
-	return c
+	return c, nil
 }
 
 func (s *Store) sweepLocked(now time.Time) {
@@ -949,7 +977,10 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(now)
-	c := s.ensureConversationLocked(input, now)
+	c, err := s.ensureConversationLocked(input, now)
+	if err != nil {
+		return nil, err
+	}
 	cp := *c
 	return &cp, nil
 }
@@ -1056,10 +1087,14 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 		}
 	}
 
-	conv := s.ensureConversationLocked(CreateConversationInput{
+	conv, err := s.ensureConversationLocked(CreateConversationInput{
 		ConversationID: input.ConversationID,
 		Participants:   []string{from, to},
+		ActorAgentID:   from,
 	}, now)
+	if err != nil {
+		return nil, false, err
+	}
 
 	s.nextMessageID++
 	mid := fmt.Sprintf("m-%06d", s.nextMessageID)
@@ -1460,7 +1495,10 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 	defer s.mu.Unlock()
 	s.sweepLocked(now)
 
-	conv := s.ensureConversationLocked(CreateConversationInput{ConversationID: input.ConversationID}, now)
+	conv, err := s.ensureConversationLocked(CreateConversationInput{ConversationID: input.ConversationID}, now)
+	if err != nil {
+		return nil, err
+	}
 
 	s.nextMessageID++
 	mid := fmt.Sprintf("m-%06d", s.nextMessageID)
