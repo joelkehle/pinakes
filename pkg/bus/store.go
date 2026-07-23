@@ -342,28 +342,30 @@ func (s *Store) agentCanAccessName(agentID, resource string) bool {
 	return s.agentHasScope(agentID, scope)
 }
 
-func (s *Store) actorCanAccessAnyName(actor string, names []string) bool {
+func (s *Store) actorCanAccessAllNames(actor string, names []string) bool {
 	actor = strings.TrimSpace(actor)
 	if actor == "" {
 		return true
 	}
+	protected := false
 	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		if s.agentCanAccessName(actor, name) {
-			return true
+		protected = true
+		if !s.agentCanAccessName(actor, name) {
+			return false
 		}
 	}
-	return false
+	return protected
 }
 
 func (s *Store) actorCanAccessConversation(actor string, conv *Conversation) bool {
 	if conv == nil {
 		return false
 	}
-	return s.actorCanAccessAnyName(actor, conv.Participants)
+	return s.actorCanAccessAllNames(actor, conv.Participants)
 }
 
 func normalizeBuildInfo(in *BuildInfo) *BuildInfo {
@@ -1617,12 +1619,12 @@ func (s *Store) eventMatchesFilter(evt ObserveEvent, filter ObserveFilter) bool 
 	if filter.AgentID != "" {
 		for _, id := range evt.AgentIDs {
 			if id == filter.AgentID {
-				return s.actorCanAccessAnyName(filter.ActorAgentID, evt.AgentIDs)
+				return s.actorCanAccessAllNames(filter.ActorAgentID, evt.AgentIDs)
 			}
 		}
 		return false
 	}
-	return s.actorCanAccessAnyName(filter.ActorAgentID, evt.AgentIDs)
+	return s.actorCanAccessAllNames(filter.ActorAgentID, evt.AgentIDs)
 }
 
 func (s *Store) ObserveSince(afterID int64, filter ObserveFilter, wait time.Duration) ([]ObserveEvent, int64) {
