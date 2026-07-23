@@ -938,6 +938,72 @@ func TestContractConversationReadsRequireObserveAuth(t *testing.T) {
 	}), http.StatusOK)
 }
 
+func TestContractAgentHMACConversationReadsAreScoped(t *testing.T) {
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	h := newContractServerWithEnv(t, map[string]string{"OBSERVE_TOKENS": testObserveToken})
+	ts := httptest.NewServer(h)
+	defer func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	}()
+
+	for _, reg := range []map[string]any{
+		{"agent_id": "ucla.reader", "capabilities": []string{"reader"}, "mode": "pull", "ttl": 60, "secret": "secret-ucla"},
+		{"agent_id": "personal.a", "capabilities": []string{"orchestrator"}, "mode": "pull", "ttl": 60, "secret": "secret-pa"},
+		{"agent_id": "personal.b", "capabilities": []string{"worker"}, "mode": "pull", "ttl": 60, "secret": "secret-pb"},
+	} {
+		mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", reg, nil), http.StatusOK)
+	}
+
+	convReq := map[string]any{
+		"conversation_id": "conv-personal-hidden",
+		"title":           "personal hidden title",
+		"participants":    []string{"personal.a", "personal.b"},
+	}
+	convBlob, _ := json.Marshal(convReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", convReq, map[string]string{
+		"X-Agent-ID":      "personal.a",
+		"X-Bus-Signature": signPayload("secret-pa", convBlob),
+	}), http.StatusOK)
+
+	sendReq := map[string]any{
+		"to": "personal.b", "from": "personal.a", "conversation_id": "conv-personal-hidden", "request_id": "rid-personal-hidden", "type": "request", "body": "personal body hidden from ucla",
+	}
+	sendBlob, _ := json.Marshal(sendReq)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendReq, map[string]string{
+		"X-Bus-Signature": signPayload("secret-pa", sendBlob),
+	}), http.StatusOK)
+
+	listQuery := ""
+	uclaList := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, map[string]string{
+		"X-Agent-ID":      "ucla.reader",
+		"X-Bus-Signature": signPayload("secret-ucla", []byte(listQuery)),
+	}), http.StatusOK)
+	if bytes.Contains(uclaList, []byte("conv-personal-hidden")) || bytes.Contains(uclaList, []byte("personal hidden title")) {
+		t.Fatalf("ucla HMAC saw personal conversation list data: %s", string(uclaList))
+	}
+
+	historyQuery := "cursor=0"
+	mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-personal-hidden/messages?"+historyQuery, nil, map[string]string{
+		"X-Agent-ID":      "ucla.reader",
+		"X-Bus-Signature": signPayload("secret-ucla", []byte(historyQuery)),
+	}), http.StatusNotFound)
+
+	tokenList := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, map[string]string{
+		"Authorization": "Bearer " + testObserveToken,
+	}), http.StatusOK)
+	if !bytes.Contains(tokenList, []byte("conv-personal-hidden")) {
+		t.Fatalf("observe token should see global conversation list: %s", string(tokenList))
+	}
+	tokenHistory := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/conv-personal-hidden/messages", nil, map[string]string{
+		"Authorization": "Bearer " + testObserveToken,
+	}), http.StatusOK)
+	if !bytes.Contains(tokenHistory, []byte("personal body hidden from ucla")) {
+		t.Fatalf("observe token should see global conversation history: %s", string(tokenHistory))
+	}
+}
+
 func TestContractConversationCreateRequiresTokenOrAgentHMAC(t *testing.T) {
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 

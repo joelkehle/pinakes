@@ -214,8 +214,9 @@ type CreateConversationInput struct {
 }
 
 type ListConversationsFilter struct {
-	Participant string
-	Status      string
+	Participant  string
+	Status       string
+	ActorAgentID string
 }
 
 type SendMessageInput struct {
@@ -263,9 +264,11 @@ type ListConversationMessagesInput struct {
 	ConversationID string
 	Cursor         int
 	Limit          int
+	ActorAgentID   string
 }
 
 type ObserveFilter struct {
 	ConversationID string
 	AgentID        string
+	ActorAgentID   string
 }

@@ -158,8 +158,8 @@ This doc describes the extracted bus contract as implemented by:
 - Ack auth uses the `agent_id` secret.
 - Event auth uses `X-Agent-ID` + that agent's secret.
 - Conversation creation requires agent HMAC over the raw body or a valid inject token.
-- Conversation listing and conversation message history require observe-equivalent auth because conversation metadata and message bodies can contain private operational data.
-- Observe requires an observe token (header preferred, `?token=` fallback for SSE clients) or agent HMAC over the exact raw query string.
+- Conversation listing and conversation message history require observe-equivalent auth because conversation metadata and message bodies can contain private operational data. Agent HMAC readers are scoped to conversations visible to that identity's effective scope; observe-token readers are operator-level and remain global.
+- Observe requires an observe token (header preferred, `?token=` fallback for SSE clients) or agent HMAC over the exact raw query string. Agent HMAC observe streams are scoped to events visible to that identity's effective scope; observe-token streams remain global.
 - Human inject requires a valid inject token and is then gated by `HUMAN_ALLOWLIST` if set.
 - `INJECT_TOKENS` or `OBSERVE_TOKENS` unset means token auth fails closed for those token paths.
 

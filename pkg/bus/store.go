@@ -327,6 +327,45 @@ func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) err
 	return newError(CodeUnauthorized, "identity is not allowed to access this scope", false, 0)
 }
 
+func (s *Store) agentCanAccessName(agentID, resource string) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return true
+	}
+	scope, ok := s.scopeOfName(resource)
+	if !ok {
+		return false
+	}
+	if scope == ScopeShared {
+		return s.agentHasSharedGrant(agentID)
+	}
+	return s.agentHasScope(agentID, scope)
+}
+
+func (s *Store) actorCanAccessAnyName(actor string, names []string) bool {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return true
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if s.agentCanAccessName(actor, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) actorCanAccessConversation(actor string, conv *Conversation) bool {
+	if conv == nil {
+		return false
+	}
+	return s.actorCanAccessAnyName(actor, conv.Participants)
+}
+
 func normalizeBuildInfo(in *BuildInfo) *BuildInfo {
 	if in == nil {
 		return nil
@@ -917,6 +956,7 @@ func (s *Store) ListConversations(filter ListConversationsFilter) []Conversation
 	now := s.now()
 	participant := strings.TrimSpace(filter.Participant)
 	status := strings.TrimSpace(filter.Status)
+	actor := strings.TrimSpace(filter.ActorAgentID)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -925,6 +965,9 @@ func (s *Store) ListConversations(filter ListConversationsFilter) []Conversation
 	out := []Conversation{}
 	for _, c := range s.conversations {
 		if status != "" && c.Status != status {
+			continue
+		}
+		if !s.actorCanAccessConversation(actor, c) {
 			continue
 		}
 		if participant != "" {
@@ -1541,6 +1584,9 @@ func (s *Store) ListConversationMessages(input ListConversationMessagesInput) (s
 	if !ok {
 		return "", nil, 0, newError(CodeNotFound, "conversation not found", false, 0)
 	}
+	if !s.actorCanAccessConversation(strings.TrimSpace(input.ActorAgentID), conv) {
+		return "", nil, 0, newError(CodeNotFound, "conversation not found", false, 0)
+	}
 	ids := s.conversationMessages[conv.ConversationID]
 	cursor := input.Cursor
 	if cursor < 0 {
@@ -1564,19 +1610,19 @@ func (s *Store) ListConversationMessages(input ListConversationMessagesInput) (s
 	return conv.ConversationID, out, end, nil
 }
 
-func eventMatchesFilter(evt ObserveEvent, filter ObserveFilter) bool {
+func (s *Store) eventMatchesFilter(evt ObserveEvent, filter ObserveFilter) bool {
 	if filter.ConversationID != "" && evt.ConversationID != filter.ConversationID {
 		return false
 	}
 	if filter.AgentID != "" {
 		for _, id := range evt.AgentIDs {
 			if id == filter.AgentID {
-				return true
+				return s.actorCanAccessAnyName(filter.ActorAgentID, evt.AgentIDs)
 			}
 		}
 		return false
 	}
-	return true
+	return s.actorCanAccessAnyName(filter.ActorAgentID, evt.AgentIDs)
 }
 
 func (s *Store) ObserveSince(afterID int64, filter ObserveFilter, wait time.Duration) ([]ObserveEvent, int64) {
@@ -1601,7 +1647,7 @@ func (s *Store) ObserveSince(afterID int64, filter ObserveFilter, wait time.Dura
 		out := []ObserveEvent{}
 		last := afterID
 		for _, evt := range s.observeEvents[idx:] {
-			if !eventMatchesFilter(evt, filter) {
+			if !s.eventMatchesFilter(evt, filter) {
 				continue
 			}
 			out = append(out, evt)

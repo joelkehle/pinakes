@@ -505,13 +505,19 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{"ok": true, "conversation_id": c.ConversationID})
 	case http.MethodGet:
-		if err := s.verifyObserveAuth(r); err != nil {
+		auth, err := s.verifyObserveAuth(r)
+		if err != nil {
 			writeBusError(w, err)
 			return
 		}
+		actor := ""
+		if !auth.Global {
+			actor = auth.AgentID
+		}
 		filter := bus.ListConversationsFilter{
-			Participant: strings.TrimSpace(r.URL.Query().Get("participant")),
-			Status:      strings.TrimSpace(r.URL.Query().Get("status")),
+			Participant:  strings.TrimSpace(r.URL.Query().Get("participant")),
+			Status:       strings.TrimSpace(r.URL.Query().Get("status")),
+			ActorAgentID: actor,
 		}
 		conversations := s.store.ListConversations(filter)
 		writeJSON(w, 200, map[string]any{"conversations": conversations})
@@ -535,9 +541,14 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if err := s.verifyObserveAuth(r); err != nil {
+	auth, err := s.verifyObserveAuth(r)
+	if err != nil {
 		writeBusError(w, err)
 		return
+	}
+	actor := ""
+	if !auth.Global {
+		actor = auth.AgentID
 	}
 
 	cursor := parseInt(r.URL.Query().Get("cursor"), 0)
@@ -546,6 +557,7 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 		ConversationID: conversationID,
 		Cursor:         cursor,
 		Limit:          limit,
+		ActorAgentID:   actor,
 	})
 	if err != nil {
 		writeBusError(w, err)
@@ -732,7 +744,8 @@ func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodGet) {
 		return
 	}
-	if err := s.verifyObserveAuth(r); err != nil {
+	auth, err := s.verifyObserveAuth(r)
+	if err != nil {
 		writeBusError(w, err)
 		return
 	}
@@ -748,9 +761,14 @@ func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	cursor := parseObserveCursor(r)
+	actor := ""
+	if !auth.Global {
+		actor = auth.AgentID
+	}
 	filter := bus.ObserveFilter{
 		ConversationID: strings.TrimSpace(r.URL.Query().Get("conversation_id")),
 		AgentID:        strings.TrimSpace(r.URL.Query().Get("agent_id")),
+		ActorAgentID:   actor,
 	}
 
 	bw := bufio.NewWriter(w)

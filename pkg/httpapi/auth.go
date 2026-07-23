@@ -108,16 +108,24 @@ func (s *Server) validObserveToken(r *http.Request) bool {
 	return tokenAllowed(s.observeTokens, r.URL.Query().Get("token"))
 }
 
-func (s *Server) verifyObserveAuth(r *http.Request) error {
+type observeAuth struct {
+	AgentID string
+	Global  bool
+}
+
+func (s *Server) verifyObserveAuth(r *http.Request) (observeAuth, error) {
 	if s.validObserveToken(r) {
-		return nil
+		return observeAuth{Global: true}, nil
 	}
 	agentID := strings.TrimSpace(r.Header.Get("X-Agent-ID"))
 	signature := strings.TrimSpace(r.Header.Get("X-Bus-Signature"))
 	if agentID == "" && signature == "" {
-		return forbiddenError("observe auth required")
+		return observeAuth{}, forbiddenError("observe auth required")
 	}
-	return s.verifySignature(agentID, signature, []byte(r.URL.RawQuery))
+	if err := s.verifySignature(agentID, signature, []byte(r.URL.RawQuery)); err != nil {
+		return observeAuth{}, err
+	}
+	return observeAuth{AgentID: agentID}, nil
 }
 
 func (s *Server) verifyConversationCreateAuth(r *http.Request, payload []byte) error {

@@ -2,6 +2,7 @@ package bus
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -200,6 +201,44 @@ func TestCompatLegacyIDCannotCrossScope(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "identity=legacy-sender") || !strings.Contains(logs.String(), "resource=personal.target") {
 		t.Fatalf("expected legacy cross-scope denial log, got %q", logs.String())
+	}
+}
+
+func TestObserveFilterHidesPersonalEventsFromUCLAActor(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "ucla.reader", nil, nil)
+	mustRegisterScoped(t, s, "personal.sender", nil, nil)
+	mustRegisterScoped(t, s, "personal.target", nil, nil)
+
+	_, _, err := s.SendMessage(SendMessageInput{
+		From:      "personal.sender",
+		To:        "personal.target",
+		RequestID: "rid-personal-observe",
+		Type:      MessageTypeRequest,
+		Body:      "personal body hidden from ucla",
+	})
+	if err != nil {
+		t.Fatalf("send personal message: %v", err)
+	}
+
+	uclaEvents, _ := s.ObserveSince(0, ObserveFilter{ActorAgentID: "ucla.reader"}, 0)
+	for _, evt := range uclaEvents {
+		if strings.Contains(fmt.Sprint(evt.Data), "personal body hidden from ucla") {
+			t.Fatalf("ucla actor observed personal event: %#v", evt)
+		}
+	}
+
+	globalEvents, _ := s.ObserveSince(0, ObserveFilter{}, 0)
+	found := false
+	for _, evt := range globalEvents {
+		if strings.Contains(fmt.Sprint(evt.Data), "personal body hidden from ucla") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("global observe did not include personal event")
 	}
 }
 
