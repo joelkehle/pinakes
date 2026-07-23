@@ -242,6 +242,191 @@ func TestObserveFilterHidesPersonalEventsFromUCLAActor(t *testing.T) {
 	}
 }
 
+func TestMixedUCLAPersonalConversationHiddenFromUCLAReader(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "ucla.reader", nil, nil)
+
+	conv, err := s.CreateConversation(CreateConversationInput{
+		ConversationID: "conv-mixed-ucla-personal",
+		Title:          "mixed personal title",
+		Participants:   []string{"ucla.peer", "personal.peer"},
+	})
+	if err != nil {
+		t.Fatalf("global create mixed ucla/personal conversation: %v", err)
+	}
+	if _, err := s.Inject(InjectInput{
+		Identity:       "operator",
+		ConversationID: conv.ConversationID,
+		Body:           "mixed personal history body",
+	}); err != nil {
+		t.Fatalf("inject mixed personal history: %v", err)
+	}
+
+	uclaConvs := s.ListConversations(ListConversationsFilter{ActorAgentID: "ucla.reader"})
+	for _, got := range uclaConvs {
+		if got.ConversationID == conv.ConversationID || strings.Contains(got.Title, "mixed personal") {
+			t.Fatalf("ucla reader saw mixed ucla/personal conversation: %#v", got)
+		}
+	}
+	if _, _, _, err := s.ListConversationMessages(ListConversationMessagesInput{
+		ConversationID: conv.ConversationID,
+		ActorAgentID:   "ucla.reader",
+	}); err == nil {
+		t.Fatalf("expected ucla reader history lookup to be hidden")
+	}
+
+	_, globalMessages, _, err := s.ListConversationMessages(ListConversationMessagesInput{
+		ConversationID: conv.ConversationID,
+	})
+	if err != nil {
+		t.Fatalf("global history lookup: %v", err)
+	}
+	if len(globalMessages) != 1 || !strings.Contains(globalMessages[0].Body, "mixed personal history body") {
+		t.Fatalf("global history missing mixed personal body: %#v", globalMessages)
+	}
+}
+
+func TestMixedUCLASharedConversationHiddenWithoutGrant(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "ucla.reader", nil, nil)
+
+	conv, err := s.CreateConversation(CreateConversationInput{
+		ConversationID: "conv-mixed-ucla-shared",
+		Title:          "mixed shared title",
+		Participants:   []string{"ucla.peer", "shared.room"},
+	})
+	if err != nil {
+		t.Fatalf("global create mixed ucla/shared conversation: %v", err)
+	}
+	if _, err := s.Inject(InjectInput{
+		Identity:       "operator",
+		ConversationID: conv.ConversationID,
+		Body:           "mixed shared history body",
+	}); err != nil {
+		t.Fatalf("inject mixed shared history: %v", err)
+	}
+
+	uclaConvs := s.ListConversations(ListConversationsFilter{ActorAgentID: "ucla.reader"})
+	for _, got := range uclaConvs {
+		if got.ConversationID == conv.ConversationID || strings.Contains(got.Title, "mixed shared") {
+			t.Fatalf("ungranted ucla reader saw mixed ucla/shared conversation: %#v", got)
+		}
+	}
+	if _, _, _, err := s.ListConversationMessages(ListConversationMessagesInput{
+		ConversationID: conv.ConversationID,
+		ActorAgentID:   "ucla.reader",
+	}); err == nil {
+		t.Fatalf("expected ungranted ucla reader history lookup to be hidden")
+	}
+}
+
+func TestObserveFilterHidesMixedScopeEventBodiesFromUCLAActor(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "ucla.reader", nil, nil)
+
+	now := s.now()
+	s.mu.Lock()
+	s.publishLocked(
+		ObserveMessage,
+		map[string]any{"body": "mixed personal observe body"},
+		"conv-observe-personal",
+		[]string{"ucla.peer", "personal.peer"},
+		now,
+	)
+	s.publishLocked(
+		ObserveMessage,
+		map[string]any{"body": "mixed shared observe body"},
+		"conv-observe-shared",
+		[]string{"ucla.peer", "shared.room"},
+		now,
+	)
+	s.publishLocked(
+		ObserveMessage,
+		map[string]any{"body": "visible ucla observe body"},
+		"conv-observe-ucla",
+		[]string{"ucla.peer", "ucla.reader"},
+		now,
+	)
+	s.mu.Unlock()
+
+	uclaEvents, _ := s.ObserveSince(0, ObserveFilter{ActorAgentID: "ucla.reader"}, 0)
+	foundVisible := false
+	for _, evt := range uclaEvents {
+		body := fmt.Sprint(evt.Data)
+		if strings.Contains(body, "mixed personal observe body") || strings.Contains(body, "mixed shared observe body") {
+			t.Fatalf("ucla actor observed mixed-scope event body: %#v", evt)
+		}
+		if strings.Contains(body, "visible ucla observe body") {
+			foundVisible = true
+		}
+	}
+	if !foundVisible {
+		t.Fatalf("expected ucla actor to see pure-ucla observe body, got %#v", uclaEvents)
+	}
+
+	globalEvents, _ := s.ObserveSince(0, ObserveFilter{}, 0)
+	if len(globalEvents) != 4 {
+		t.Fatalf("global observe should include registrations plus all mixed events, got %#v", globalEvents)
+	}
+}
+
+func TestUCLACreatorCannotCreateConversationWithPersonalParticipant(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "ucla.creator", nil, nil)
+
+	_, err := s.CreateConversation(CreateConversationInput{
+		ConversationID: "conv-create-personal-denied",
+		Participants:   []string{"ucla.creator", "personal.peer"},
+		ActorAgentID:   "ucla.creator",
+	})
+	if err == nil {
+		t.Fatalf("expected ucla creator to be denied mixed personal participants")
+	}
+	if !strings.Contains(logs.String(), "identity=ucla.creator") || !strings.Contains(logs.String(), "resource=personal.peer") {
+		t.Fatalf("expected create denial log, got %q", logs.String())
+	}
+}
+
+func TestUCLACreatorCannotReuseExistingPersonalConversationID(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "ucla.creator", nil, nil)
+	mustRegisterScoped(t, s, "ucla.target", nil, nil)
+
+	conv, err := s.CreateConversation(CreateConversationInput{
+		ConversationID: "conv-existing-personal",
+		Participants:   []string{"personal.a", "personal.b"},
+	})
+	if err != nil {
+		t.Fatalf("global create personal conversation: %v", err)
+	}
+
+	_, err = s.CreateConversation(CreateConversationInput{
+		ConversationID: conv.ConversationID,
+		Participants:   []string{"ucla.creator", "ucla.target"},
+		ActorAgentID:   "ucla.creator",
+	})
+	if err == nil {
+		t.Fatalf("expected ucla creator to be denied existing personal conversation reuse")
+	}
+
+	_, _, err = s.SendMessage(SendMessageInput{
+		From:           "ucla.creator",
+		To:             "ucla.target",
+		ConversationID: conv.ConversationID,
+		RequestID:      "rid-reuse-personal",
+		Type:           MessageTypeRequest,
+		Body:           "reuse denied",
+	})
+	if err == nil {
+		t.Fatalf("expected ucla send to be denied existing personal conversation reuse")
+	}
+}
+
 func TestSharedRequiresExplicitGrantForSubscribe(t *testing.T) {
 	var logs bytes.Buffer
 	s := newScopeTestStore(&logs)
