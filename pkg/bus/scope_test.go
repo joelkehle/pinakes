@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -424,6 +425,46 @@ func TestUCLACreatorCannotReuseExistingPersonalConversationID(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected ucla send to be denied existing personal conversation reuse")
+	}
+}
+
+func TestConversationReuseExpandsProtectedScopesBeforeHistoryRead(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs, "personal.sender", "shared.target")
+	mustRegisterScoped(t, s, "personal.sender", nil, nil)
+	mustRegisterScoped(t, s, "personal.reader", nil, nil)
+	mustRegisterScoped(t, s, "shared.target", nil, nil)
+
+	conv, err := s.CreateConversation(CreateConversationInput{
+		ConversationID: "conv-personal-then-shared",
+		Participants:   []string{"personal.sender", "personal.reader"},
+	})
+	if err != nil {
+		t.Fatalf("create personal conversation: %v", err)
+	}
+
+	if _, _, err := s.SendMessage(SendMessageInput{
+		From:           "personal.sender",
+		To:             "shared.target",
+		ConversationID: conv.ConversationID,
+		RequestID:      "rid-expand-shared",
+		Type:           MessageTypeInform,
+		Body:           "shared history must stay protected",
+	}); err != nil {
+		t.Fatalf("send shared message on existing conversation: %v", err)
+	}
+
+	if _, _, _, err := s.ListConversationMessages(ListConversationMessagesInput{
+		ConversationID: conv.ConversationID,
+		ActorAgentID:   "personal.reader",
+	}); err == nil {
+		t.Fatalf("expected personal-only reader to be denied expanded shared history")
+	}
+
+	conversations := s.ListConversations(ListConversationsFilter{})
+	wantParticipants := []string{"personal.sender", "personal.reader", "shared.target"}
+	if len(conversations) != 1 || !slices.Equal(conversations[0].Participants, wantParticipants) {
+		t.Fatalf("conversation did not record expanded shared scope: %#v", conversations)
 	}
 }
 

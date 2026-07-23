@@ -640,6 +640,7 @@ func (s *Store) ensureConversationLocked(input CreateConversationInput, now time
 		if err := s.authorizeActorForNames(input.ActorAgentID, "conversation_reuse", input.Participants); err != nil {
 			return nil, err
 		}
+		mergeConversationParticipantsLocked(existing, input.Participants)
 		return existing, nil
 	}
 	if err := s.authorizeActorForNames(input.ActorAgentID, "conversation_create", input.Participants); err != nil {
@@ -656,6 +657,24 @@ func (s *Store) ensureConversationLocked(input CreateConversationInput, now time
 	}
 	s.conversations[id] = c
 	return c, nil
+}
+
+func mergeConversationParticipantsLocked(conversation *Conversation, participants []string) {
+	seen := make(map[string]struct{}, len(conversation.Participants)+len(participants))
+	for _, participant := range conversation.Participants {
+		seen[strings.TrimSpace(participant)] = struct{}{}
+	}
+	for _, participant := range participants {
+		participant = strings.TrimSpace(participant)
+		if participant == "" {
+			continue
+		}
+		if _, ok := seen[participant]; ok {
+			continue
+		}
+		conversation.Participants = append(conversation.Participants, participant)
+		seen[participant] = struct{}{}
+	}
 }
 
 func (s *Store) sweepLocked(now time.Time) {
