@@ -20,18 +20,18 @@ func BenchmarkSendMessage(b *testing.B) {
 			return now
 		},
 	})
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		b.Fatalf("register a: %v", err)
 	}
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		b.Fatalf("register b: %v", err)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _, err := s.SendMessage(SendMessageInput{
-			To:        "b",
-			From:      "a",
+			To:        "ucla.b",
+			From:      "ucla.a",
 			RequestID: "rid-bench-" + strconv.Itoa(i),
 			Type:      MessageTypeRequest,
 			Body:      "payload",

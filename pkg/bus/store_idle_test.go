@@ -96,10 +96,10 @@ func TestPollInboxIdleLongPollCheapWithBacklog(t *testing.T) {
 
 	// Two heartbeat agents — sender registers and sends one message per
 	// iteration. Recipient stays idle.
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 
@@ -107,8 +107,8 @@ func TestPollInboxIdleLongPollCheapWithBacklog(t *testing.T) {
 	// sweep visible; we don't need 300k to verify rate-limiting kicks in.
 	for i := 0; i < 2000; i++ {
 		_, _, err := s.SendMessage(SendMessageInput{
-			To:        "b",
-			From:      "a",
+			To:        "ucla.b",
+			From:      "ucla.a",
 			RequestID: "bench-" + strconv.Itoa(i),
 			Type:      MessageTypeRequest,
 			Body:      "payload",
@@ -117,7 +117,7 @@ func TestPollInboxIdleLongPollCheapWithBacklog(t *testing.T) {
 			t.Fatalf("send %d: %v", i, err)
 		}
 		// Drain the inbox so PollInbox(wait>0) actually waits.
-		_, _, _ = s.PollInbox(PollInboxInput{AgentID: "b", Cursor: i + 1, Wait: 0})
+		_, _, _ = s.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: i + 1, Wait: 0})
 	}
 
 	sweepRanBefore := s.sweepRan.Load()
@@ -129,7 +129,7 @@ func TestPollInboxIdleLongPollCheapWithBacklog(t *testing.T) {
 	go func() {
 		defer close(done)
 		events, _, err := s.PollInbox(PollInboxInput{
-			AgentID: "b",
+			AgentID: "ucla.b",
 			Cursor:  2000,
 			Wait:    100 * time.Millisecond,
 		})
@@ -172,10 +172,10 @@ func TestPollInboxWakesOnAppend(t *testing.T) {
 		// notifier should fire well before the deadline.
 	})
 	_ = now
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestPollInboxWakesOnAppend(t *testing.T) {
 	start := time.Now()
 	go func() {
 		events, _, err := s.PollInbox(PollInboxInput{
-			AgentID: "b",
+			AgentID: "ucla.b",
 			Cursor:  0,
 			Wait:    2 * time.Second,
 		})
@@ -198,8 +198,8 @@ func TestPollInboxWakesOnAppend(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 	if _, _, err := s.SendMessage(SendMessageInput{
-		To:        "b",
-		From:      "a",
+		To:        "ucla.b",
+		From:      "ucla.a",
 		RequestID: "wake",
 		Type:      MessageTypeRequest,
 		Body:      "hi",
@@ -239,10 +239,10 @@ func TestObserveSinceWakesOnPublish(t *testing.T) {
 		DefaultRegistrationTTL: 60 * time.Second,
 		SweepMinInterval:       250 * time.Millisecond,
 	})
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 
@@ -262,8 +262,8 @@ func TestObserveSinceWakesOnPublish(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 	if _, _, err := s.SendMessage(SendMessageInput{
-		To:        "b",
-		From:      "a",
+		To:        "ucla.b",
+		From:      "ucla.a",
 		RequestID: "obs-wake",
 		Type:      MessageTypeRequest,
 		Body:      "hi",
@@ -302,10 +302,10 @@ func BenchmarkIdlePollInboxWithBacklog(b *testing.B) {
 		MaxInboxEventsPerAgent: 1,
 		MaxObserveEvents:       1000,
 	})
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
 		b.Fatalf("register a: %v", err)
 	}
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
 		b.Fatalf("register b: %v", err)
 	}
 
@@ -313,8 +313,8 @@ func BenchmarkIdlePollInboxWithBacklog(b *testing.B) {
 	const backlog = 50000
 	for i := 0; i < backlog; i++ {
 		if _, _, err := s.SendMessage(SendMessageInput{
-			To:        "b",
-			From:      "a",
+			To:        "ucla.b",
+			From:      "ucla.a",
 			RequestID: "bench-backlog-" + strconv.Itoa(i),
 			Type:      MessageTypeRequest,
 			Body:      "x",
@@ -323,7 +323,7 @@ func BenchmarkIdlePollInboxWithBacklog(b *testing.B) {
 		}
 	}
 	// Drain b's inbox cursor so PollInbox returns empty.
-	_, cursor, err := s.PollInbox(PollInboxInput{AgentID: "b", Cursor: 0, Wait: 0})
+	_, cursor, err := s.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: 0, Wait: 0})
 	if err != nil {
 		b.Fatalf("drain: %v", err)
 	}
@@ -331,7 +331,7 @@ func BenchmarkIdlePollInboxWithBacklog(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _, err := s.PollInbox(PollInboxInput{
-			AgentID: "b",
+			AgentID: "ucla.b",
 			Cursor:  cursor + backlog,
 			Wait:    0,
 		})
@@ -358,17 +358,17 @@ func BenchmarkIdleObserveSinceAtCursor(b *testing.B) {
 		MaxObserveEvents:       50000,
 		MaxInboxEventsPerAgent: 1,
 	})
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 3600}); err != nil {
 		b.Fatalf("register a: %v", err)
 	}
-	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 3600}); err != nil {
 		b.Fatalf("register b: %v", err)
 	}
 	// Pack the observe ring.
 	for i := 0; i < 50000; i++ {
 		if _, _, err := s.SendMessage(SendMessageInput{
-			To:        "b",
-			From:      "a",
+			To:        "ucla.b",
+			From:      "ucla.a",
 			RequestID: "bench-obs-" + strconv.Itoa(i),
 			Type:      MessageTypeRequest,
 			Body:      "x",

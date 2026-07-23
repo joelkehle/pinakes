@@ -3,12 +3,12 @@ package bus
 import "testing"
 
 func FuzzSendMessageDoesNotPanic(f *testing.F) {
-	f.Add("b", "a", "rid-1", "request", "hello")
-	f.Add("b", "a", "", "request", "hello")
-	f.Add("", "a", "rid-2", "request", "hello")
-	f.Add("b", "", "rid-3", "request", "hello")
-	f.Add("b", "a", "rid-4", "unknown", "hello")
-	f.Add("b", "a", "rid-5", "inform", "")
+	f.Add("ucla.b", "ucla.a", "rid-1", "request", "hello")
+	f.Add("ucla.b", "ucla.a", "", "request", "hello")
+	f.Add("", "ucla.a", "rid-2", "request", "hello")
+	f.Add("ucla.b", "", "rid-3", "request", "hello")
+	f.Add("ucla.b", "ucla.a", "rid-4", "unknown", "hello")
+	f.Add("ucla.b", "ucla.a", "rid-5", "inform", "")
 
 	f.Fuzz(func(t *testing.T, to, from, requestID, typ, body string) {
 		s, _ := newTestStore(t)

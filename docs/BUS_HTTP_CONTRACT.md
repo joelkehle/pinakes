@@ -35,7 +35,7 @@ This doc describes the extracted bus contract as implemented by:
 
 - `POST /v1/agents/register`
   - source: `handleRegisterAgent`
-  - body: `agent_id`, `capabilities`, `version`, `description`, `agent_class`, `mutation_class`, `build`, `meta`, `mode`, `callback_url`, `ttl`, `secret`
+  - body: `agent_id`, `allowed_scopes`, `shared_grants`, `capabilities`, `version`, `description`, `agent_class`, `mutation_class`, `build`, `meta`, `mode`, `callback_url`, `ttl`, `secret`
   - response: `ok`, `agent_id`, `expires_at`
 - `GET /v1/agents`
   - source: `handleListAgents`
@@ -140,6 +140,13 @@ This doc describes the extracted bus contract as implemented by:
 ## Auth Rules
 
 - Agent registration requires a non-empty `secret`.
+- Agent IDs are also queue names and are moving to `personal.`, `ucla.`, or `shared.` prefixes. During the default `BUS_NAMESPACE_MODE=compat` migration window, legacy unprefixed IDs are accepted and assigned `BUS_LEGACY_SCOPE`. In `BUS_NAMESPACE_MODE=strict`, unprefixed IDs are rejected.
+- Agent registration tolerates `allowed_scopes` (`personal`, `ucla`, `shared`) and `shared_grants` (`shared`) claims for compatibility and validation, but callers cannot define their own policy. Effective scopes are assigned server-side from the namespace prefix on `agent_id`.
+- Effective `shared.*` access is assigned server-side through `SHARED_GRANT_AGENTS`; registration-body `shared_grants` claims do not grant access.
+- Publishing to `personal.*` or `ucla.*` requires that scope in the sender identity's `allowed_scopes`.
+- Publishing to or subscribing as `shared.*` requires an explicit `shared_grants: ["shared"]`; `allowed_scopes: ["shared"]` alone is not sufficient.
+- Scope denials are logged with action, identity, resource, and reason.
+- Message `from` and `to`, inbox `agent_id`, and conversation participants follow the same namespace migration behavior: legacy unprefixed IDs are accepted in compat mode and rejected in strict mode.
 - Agent registration is gated by `ALLOWLIST_FILE` if set, otherwise `AGENT_ALLOWLIST`.
 - Removing an agent from the allowlist blocks future registration only; it does not evict already-registered agents mid-session.
 - Agent registration secrets are persisted in the active durable agent store so a bus restart does not force re-registration before signed endpoints work.
@@ -151,8 +158,8 @@ This doc describes the extracted bus contract as implemented by:
 - Ack auth uses the `agent_id` secret.
 - Event auth uses `X-Agent-ID` + that agent's secret.
 - Conversation creation requires agent HMAC over the raw body or a valid inject token.
-- Conversation listing and conversation message history require observe-equivalent auth because conversation metadata and message bodies can contain private operational data.
-- Observe requires an observe token (header preferred, `?token=` fallback for SSE clients) or agent HMAC over the exact raw query string.
+- Conversation listing and conversation message history require observe-equivalent auth because conversation metadata and message bodies can contain private operational data. Agent HMAC readers are scoped to conversations visible to that identity's effective scope; observe-token readers are operator-level and remain global.
+- Observe requires an observe token (header preferred, `?token=` fallback for SSE clients) or agent HMAC over the exact raw query string. Agent HMAC observe streams are scoped to events visible to that identity's effective scope; observe-token streams remain global.
 - Human inject requires a valid inject token and is then gated by `HUMAN_ALLOWLIST` if set.
 - `INJECT_TOKENS` or `OBSERVE_TOKENS` unset means token auth fails closed for those token paths.
 
@@ -209,6 +216,18 @@ This doc describes the extracted bus contract as implemented by:
   - comma-separated bearer tokens for `/v1/observe`
   - `Authorization: Bearer <token>` is preferred; `?token=<token>` exists only for SSE clients that cannot set headers
   - empty/unset means token-authenticated observe fails closed; agent HMAC observe remains available
+- `BUS_NAMESPACE_MODE`
+  - `compat` or `strict`
+  - default: `compat`
+  - `compat` accepts legacy unprefixed IDs and assigns them `BUS_LEGACY_SCOPE`
+  - `strict` rejects unprefixed IDs; intended for the final cutover after downstream agents and allowlists migrate
+- `BUS_LEGACY_SCOPE`
+  - scope assigned to unprefixed IDs while `BUS_NAMESPACE_MODE=compat`
+  - supported values: `personal`, `ucla`
+  - default: `ucla`
+- `SHARED_GRANT_AGENTS`
+  - comma-separated agent IDs that receive explicit `shared.*` access
+  - empty/unset means no identity receives `shared.*` access from registration claims alone
 - `MAX_BODY_BYTES`
   - maximum request body size in bytes for all POST endpoints
   - default: `2097152` (2 MiB); `0` or negative disables the cap

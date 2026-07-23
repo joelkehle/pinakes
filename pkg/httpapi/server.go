@@ -400,6 +400,8 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		AgentID       string         `json:"agent_id"`
+		AllowedScopes []string       `json:"allowed_scopes"`
+		SharedGrants  []string       `json:"shared_grants"`
 		Capabilities  []string       `json:"capabilities"`
 		Version       string         `json:"version"`
 		Description   string         `json:"description"`
@@ -432,6 +434,8 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 
 	agent, err := s.store.RegisterAgent(bus.RegisterAgentInput{
 		AgentID:       req.AgentID,
+		AllowedScopes: req.AllowedScopes,
+		SharedGrants:  req.SharedGrants,
 		Capabilities:  req.Capabilities,
 		Version:       req.Version,
 		Description:   req.Description,
@@ -475,9 +479,14 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 			writeBusError(w, busErrorOrValidation(err))
 			return
 		}
-		if err := s.verifyConversationCreateAuth(r, blob); err != nil {
+		auth, err := s.verifyConversationCreateAuth(r, blob)
+		if err != nil {
 			writeBusError(w, err)
 			return
+		}
+		actor := ""
+		if !auth.Global {
+			actor = auth.AgentID
 		}
 		var req struct {
 			ConversationID string   `json:"conversation_id"`
@@ -494,6 +503,7 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 			Title:          req.Title,
 			Participants:   req.Participants,
 			Meta:           req.Meta,
+			ActorAgentID:   actor,
 		})
 		if err != nil {
 			writeBusError(w, err)
@@ -501,13 +511,19 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{"ok": true, "conversation_id": c.ConversationID})
 	case http.MethodGet:
-		if err := s.verifyObserveAuth(r); err != nil {
+		auth, err := s.verifyObserveAuth(r)
+		if err != nil {
 			writeBusError(w, err)
 			return
 		}
+		actor := ""
+		if !auth.Global {
+			actor = auth.AgentID
+		}
 		filter := bus.ListConversationsFilter{
-			Participant: strings.TrimSpace(r.URL.Query().Get("participant")),
-			Status:      strings.TrimSpace(r.URL.Query().Get("status")),
+			Participant:  strings.TrimSpace(r.URL.Query().Get("participant")),
+			Status:       strings.TrimSpace(r.URL.Query().Get("status")),
+			ActorAgentID: actor,
 		}
 		conversations := s.store.ListConversations(filter)
 		writeJSON(w, 200, map[string]any{"conversations": conversations})
@@ -531,9 +547,14 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if err := s.verifyObserveAuth(r); err != nil {
+	auth, err := s.verifyObserveAuth(r)
+	if err != nil {
 		writeBusError(w, err)
 		return
+	}
+	actor := ""
+	if !auth.Global {
+		actor = auth.AgentID
 	}
 
 	cursor := parseInt(r.URL.Query().Get("cursor"), 0)
@@ -542,6 +563,7 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 		ConversationID: conversationID,
 		Cursor:         cursor,
 		Limit:          limit,
+		ActorAgentID:   actor,
 	})
 	if err != nil {
 		writeBusError(w, err)
@@ -728,7 +750,8 @@ func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodGet) {
 		return
 	}
-	if err := s.verifyObserveAuth(r); err != nil {
+	auth, err := s.verifyObserveAuth(r)
+	if err != nil {
 		writeBusError(w, err)
 		return
 	}
@@ -744,9 +767,14 @@ func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	cursor := parseObserveCursor(r)
+	actor := ""
+	if !auth.Global {
+		actor = auth.AgentID
+	}
 	filter := bus.ObserveFilter{
 		ConversationID: strings.TrimSpace(r.URL.Query().Get("conversation_id")),
 		AgentID:        strings.TrimSpace(r.URL.Query().Get("agent_id")),
+		ActorAgentID:   actor,
 	}
 
 	bw := bufio.NewWriter(w)

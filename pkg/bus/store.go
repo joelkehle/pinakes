@@ -74,6 +74,18 @@ type Config struct {
 	// holding hundreds of thousands of retained messages. Defaults to 250ms.
 	SweepMinInterval time.Duration
 	Clock            func() time.Time
+	Logger           *log.Logger
+	// NamespaceMode controls the migration window for namespace-prefixed IDs.
+	// "compat" accepts legacy unprefixed IDs and assigns them LegacyScope.
+	// "strict" rejects unprefixed IDs. Defaults to compat.
+	NamespaceMode NamespaceMode
+	// LegacyScope is the server-authoritative scope assigned to unprefixed
+	// IDs while NamespaceMode is compat. Defaults to ucla.
+	LegacyScope Scope
+	// SharedGrantAgents is the server-authoritative list of identities that
+	// may access shared.* resources. Registration bodies may request grants,
+	// but only this policy takes effect.
+	SharedGrantAgents []string
 }
 
 type idempotencyEntry struct {
@@ -221,6 +233,18 @@ func NewStore(cfg Config) *Store {
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now
 	}
+	if cfg.NamespaceMode == "" {
+		cfg.NamespaceMode = NamespaceModeCompat
+	}
+	if cfg.NamespaceMode != NamespaceModeCompat && cfg.NamespaceMode != NamespaceModeStrict {
+		cfg.NamespaceMode = NamespaceModeCompat
+	}
+	if cfg.LegacyScope == "" {
+		cfg.LegacyScope = ScopeUCLA
+	}
+	if _, ok := validScopes[cfg.LegacyScope]; !ok || cfg.LegacyScope == ScopeShared {
+		cfg.LegacyScope = ScopeUCLA
+	}
 
 	allowlist := map[string]struct{}{}
 	for _, raw := range strings.Split(os.Getenv("HUMAN_ALLOWLIST"), ",") {
@@ -247,8 +271,11 @@ func NewStore(cfg Config) *Store {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger:    log.New(os.Stdout, "pinakes ", log.LstdFlags),
+		logger:    cfg.Logger,
 		pushQueue: make(chan pushJob, cfg.PushQueueSize),
+	}
+	if s.logger == nil {
+		s.logger = log.New(os.Stdout, "pinakes ", log.LstdFlags)
 	}
 
 	// Push workers are daemon goroutines for the life of the process. Store
@@ -271,6 +298,93 @@ func (s *Store) now() time.Time {
 
 func dedupeKey(from, to, requestID string) string {
 	return from + "\x1f" + to + "\x1f" + requestID
+}
+
+func (s *Store) logScopeDenied(action, identity, resource, reason string) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Printf("WARN scope denied action=%s identity=%s resource=%s reason=%s", action, identity, resource, reason)
+}
+
+func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) error {
+	scope, ok := s.scopeOfName(resource)
+	if !ok {
+		s.logScopeDenied(action, agent.AgentID, resource, "unprefixed resource")
+		return newError(CodeValidation, "topic/queue name must be prefixed with personal., ucla., or shared.", false, 0)
+	}
+	if scope == ScopeShared {
+		if s.agentHasSharedGrant(agent.AgentID) {
+			return nil
+		}
+		s.logScopeDenied(action, agent.AgentID, resource, "shared grant required")
+		return newError(CodeUnauthorized, "shared.* access requires explicit shared grant", false, 0)
+	}
+	if s.agentHasScope(agent.AgentID, scope) {
+		return nil
+	}
+	s.logScopeDenied(action, agent.AgentID, resource, "scope not allowed")
+	return newError(CodeUnauthorized, "identity is not allowed to access this scope", false, 0)
+}
+
+func (s *Store) agentCanAccessName(agentID, resource string) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return true
+	}
+	scope, ok := s.scopeOfName(resource)
+	if !ok {
+		return false
+	}
+	if scope == ScopeShared {
+		return s.agentHasSharedGrant(agentID)
+	}
+	return s.agentHasScope(agentID, scope)
+}
+
+func (s *Store) actorCanAccessAllNames(actor string, names []string) bool {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return true
+	}
+	protected := false
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		protected = true
+		if !s.agentCanAccessName(actor, name) {
+			return false
+		}
+	}
+	return protected
+}
+
+func (s *Store) actorCanAccessConversation(actor string, conv *Conversation) bool {
+	if conv == nil {
+		return false
+	}
+	return s.actorCanAccessAllNames(actor, conv.Participants)
+}
+
+func (s *Store) authorizeActorForNames(actor, action string, names []string) error {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return nil
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if s.agentCanAccessName(actor, name) {
+			continue
+		}
+		s.logScopeDenied(action, actor, name, "scope not allowed")
+		return newError(CodeUnauthorized, "identity is not allowed to access this scope", false, 0)
+	}
+	return nil
 }
 
 func normalizeBuildInfo(in *BuildInfo) *BuildInfo {
@@ -513,14 +627,24 @@ func (s *Store) publishLocked(eventType EventType, data any, conversationID stri
 	s.signalObserveLocked()
 }
 
-func (s *Store) ensureConversationLocked(input CreateConversationInput, now time.Time) *Conversation {
+func (s *Store) ensureConversationLocked(input CreateConversationInput, now time.Time) (*Conversation, error) {
 	id := strings.TrimSpace(input.ConversationID)
 	if id == "" {
 		s.nextConversationID++
 		id = fmt.Sprintf("c-%06d", s.nextConversationID)
 	}
 	if existing, ok := s.conversations[id]; ok {
-		return existing
+		if err := s.authorizeActorForNames(input.ActorAgentID, "conversation_reuse", existing.Participants); err != nil {
+			return nil, err
+		}
+		if err := s.authorizeActorForNames(input.ActorAgentID, "conversation_reuse", input.Participants); err != nil {
+			return nil, err
+		}
+		mergeConversationParticipantsLocked(existing, input.Participants)
+		return existing, nil
+	}
+	if err := s.authorizeActorForNames(input.ActorAgentID, "conversation_create", input.Participants); err != nil {
+		return nil, err
 	}
 	c := &Conversation{
 		ConversationID: id,
@@ -532,7 +656,25 @@ func (s *Store) ensureConversationLocked(input CreateConversationInput, now time
 		Meta:           input.Meta,
 	}
 	s.conversations[id] = c
-	return c
+	return c, nil
+}
+
+func mergeConversationParticipantsLocked(conversation *Conversation, participants []string) {
+	seen := make(map[string]struct{}, len(conversation.Participants)+len(participants))
+	for _, participant := range conversation.Participants {
+		seen[strings.TrimSpace(participant)] = struct{}{}
+	}
+	for _, participant := range participants {
+		participant = strings.TrimSpace(participant)
+		if participant == "" {
+			continue
+		}
+		if _, ok := seen[participant]; ok {
+			continue
+		}
+		conversation.Participants = append(conversation.Participants, participant)
+		seen[participant] = struct{}{}
+	}
 }
 
 func (s *Store) sweepLocked(now time.Time) {
@@ -721,6 +863,17 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if agentID == "" {
 		return nil, newError(CodeValidation, "agent_id is required", false, 0)
 	}
+	if _, ok := s.scopeOfName(agentID); !ok {
+		return nil, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
+	}
+	if _, err := normalizeScopes(input.AllowedScopes); err != nil {
+		return nil, err
+	}
+	if _, err := normalizeSharedGrants(input.SharedGrants); err != nil {
+		return nil, err
+	}
+	allowedScopes := s.agentAllowedScopes(agentID)
+	sharedGrants := s.agentSharedGrants(agentID)
 	mode := input.Mode
 	if mode == "" {
 		mode = AgentModePull
@@ -752,6 +905,8 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 
 	agent := &Agent{
 		AgentID:       agentID,
+		AllowedScopes: allowedScopes,
+		SharedGrants:  sharedGrants,
 		Capabilities:  cloneStrings(input.Capabilities),
 		Version:       strings.TrimSpace(input.Version),
 		Description:   strings.TrimSpace(input.Description),
@@ -769,6 +924,9 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if existing, ok := s.agents[agentID]; ok {
 		agent.RegisteredAt = existing.RegisteredAt
 	}
+	if err := s.authorizeAgentForName(agent, "subscribe", agentID); err != nil {
+		return nil, err
+	}
 	s.agents[agentID] = agent
 	if _, ok := s.inboxes[agentID]; !ok {
 		s.inboxes[agentID] = []InboxEvent{}
@@ -779,9 +937,11 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	s.publishLocked(
 		ObserveAgentRegistered,
 		map[string]any{
-			"agent_id":     agent.AgentID,
-			"capabilities": agent.Capabilities,
-			"at":           now,
+			"agent_id":       agent.AgentID,
+			"allowed_scopes": agent.AllowedScopes,
+			"shared_grants":  agent.SharedGrants,
+			"capabilities":   agent.Capabilities,
+			"at":             now,
 		},
 		"",
 		[]string{agent.AgentID},
@@ -825,10 +985,21 @@ func (s *Store) ListAgents(capability string) []Agent {
 
 func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation, error) {
 	now := s.now()
+	for _, participant := range input.Participants {
+		if strings.TrimSpace(participant) == "" {
+			continue
+		}
+		if _, ok := s.scopeOfName(participant); !ok {
+			return nil, newError(CodeValidation, "participants must be prefixed with personal., ucla., or shared.", false, 0)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(now)
-	c := s.ensureConversationLocked(input, now)
+	c, err := s.ensureConversationLocked(input, now)
+	if err != nil {
+		return nil, err
+	}
 	cp := *c
 	return &cp, nil
 }
@@ -837,6 +1008,7 @@ func (s *Store) ListConversations(filter ListConversationsFilter) []Conversation
 	now := s.now()
 	participant := strings.TrimSpace(filter.Participant)
 	status := strings.TrimSpace(filter.Status)
+	actor := strings.TrimSpace(filter.ActorAgentID)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -845,6 +1017,9 @@ func (s *Store) ListConversations(filter ListConversationsFilter) []Conversation
 	out := []Conversation{}
 	for _, c := range s.conversations {
 		if status != "" && c.Status != status {
+			continue
+		}
+		if !s.actorCanAccessConversation(actor, c) {
 			continue
 		}
 		if participant != "" {
@@ -875,8 +1050,14 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 	if to == "" {
 		return nil, false, newError(CodeValidation, "to is required", false, 0)
 	}
+	if _, ok := s.scopeOfName(to); !ok {
+		return nil, false, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
+	}
 	if from == "" {
 		return nil, false, newError(CodeValidation, "from is required", false, 0)
+	}
+	if _, ok := s.scopeOfName(from); !ok {
+		return nil, false, newError(CodeValidation, "from must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if requestID == "" {
 		return nil, false, newError(CodeValidation, "request_id is required", false, 0)
@@ -905,6 +1086,12 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 	if !ok || sender.Status != AgentStatusActive {
 		return nil, false, newError(CodeUnauthorized, "sender is not registered/active", false, 0)
 	}
+	if err := s.authorizeAgentForName(sender, "publish", from); err != nil {
+		return nil, false, err
+	}
+	if err := s.authorizeAgentForName(sender, "publish", to); err != nil {
+		return nil, false, err
+	}
 
 	target, ok := s.agents[to]
 	if !ok {
@@ -919,10 +1106,14 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 		}
 	}
 
-	conv := s.ensureConversationLocked(CreateConversationInput{
+	conv, err := s.ensureConversationLocked(CreateConversationInput{
 		ConversationID: input.ConversationID,
 		Participants:   []string{from, to},
+		ActorAgentID:   from,
 	}, now)
+	if err != nil {
+		return nil, false, err
+	}
 
 	s.nextMessageID++
 	mid := fmt.Sprintf("m-%06d", s.nextMessageID)
@@ -1047,6 +1238,9 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 	if agentID == "" {
 		return nil, 0, newError(CodeValidation, "agent_id is required", false, 0)
 	}
+	if _, ok := s.scopeOfName(agentID); !ok {
+		return nil, 0, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
+	}
 
 	wait := input.Wait
 	if wait < 0 {
@@ -1066,6 +1260,10 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 		if !ok || agent.Status != AgentStatusActive {
 			s.mu.Unlock()
 			return nil, 0, newError(CodeUnauthorized, "agent is not registered/active", false, 0)
+		}
+		if err := s.authorizeAgentForName(agent, "subscribe", agentID); err != nil {
+			s.mu.Unlock()
+			return nil, 0, err
 		}
 
 		events := s.inboxes[agentID]
@@ -1301,6 +1499,11 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 	if identity == "" || body == "" {
 		return nil, newError(CodeValidation, "identity and body are required", false, 0)
 	}
+	if to != "" {
+		if _, ok := s.scopeOfName(to); !ok {
+			return nil, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
+		}
+	}
 	if len(s.humanAllowlist) > 0 {
 		if _, ok := s.humanAllowlist[identity]; !ok {
 			return nil, newError(CodeUnauthorized, "human identity not allowed", false, 0)
@@ -1311,7 +1514,10 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 	defer s.mu.Unlock()
 	s.sweepLocked(now)
 
-	conv := s.ensureConversationLocked(CreateConversationInput{ConversationID: input.ConversationID}, now)
+	conv, err := s.ensureConversationLocked(CreateConversationInput{ConversationID: input.ConversationID}, now)
+	if err != nil {
+		return nil, err
+	}
 
 	s.nextMessageID++
 	mid := fmt.Sprintf("m-%06d", s.nextMessageID)
@@ -1437,6 +1643,9 @@ func (s *Store) ListConversationMessages(input ListConversationMessagesInput) (s
 	if !ok {
 		return "", nil, 0, newError(CodeNotFound, "conversation not found", false, 0)
 	}
+	if !s.actorCanAccessConversation(strings.TrimSpace(input.ActorAgentID), conv) {
+		return "", nil, 0, newError(CodeNotFound, "conversation not found", false, 0)
+	}
 	ids := s.conversationMessages[conv.ConversationID]
 	cursor := input.Cursor
 	if cursor < 0 {
@@ -1460,19 +1669,19 @@ func (s *Store) ListConversationMessages(input ListConversationMessagesInput) (s
 	return conv.ConversationID, out, end, nil
 }
 
-func eventMatchesFilter(evt ObserveEvent, filter ObserveFilter) bool {
+func (s *Store) eventMatchesFilter(evt ObserveEvent, filter ObserveFilter) bool {
 	if filter.ConversationID != "" && evt.ConversationID != filter.ConversationID {
 		return false
 	}
 	if filter.AgentID != "" {
 		for _, id := range evt.AgentIDs {
 			if id == filter.AgentID {
-				return true
+				return s.actorCanAccessAllNames(filter.ActorAgentID, evt.AgentIDs)
 			}
 		}
 		return false
 	}
-	return true
+	return s.actorCanAccessAllNames(filter.ActorAgentID, evt.AgentIDs)
 }
 
 func (s *Store) ObserveSince(afterID int64, filter ObserveFilter, wait time.Duration) ([]ObserveEvent, int64) {
@@ -1497,7 +1706,7 @@ func (s *Store) ObserveSince(afterID int64, filter ObserveFilter, wait time.Dura
 		out := []ObserveEvent{}
 		last := afterID
 		for _, evt := range s.observeEvents[idx:] {
-			if !eventMatchesFilter(evt, filter) {
+			if !s.eventMatchesFilter(evt, filter) {
 				continue
 			}
 			out = append(out, evt)

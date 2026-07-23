@@ -29,7 +29,7 @@ func TestPersistentStoreRoundTrip(t *testing.T) {
 		t.Fatalf("new persistent store: %v", err)
 	}
 	if _, err := s1.RegisterAgent(RegisterAgentInput{
-		AgentID:       "a",
+		AgentID:       "ucla.a",
 		Mode:          AgentModePull,
 		Capabilities:  []string{"x"},
 		TTLSeconds:    60,
@@ -42,12 +42,12 @@ func TestPersistentStoreRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 	msg, _, err := s1.SendMessage(SendMessageInput{
-		To:        "b",
-		From:      "a",
+		To:        "ucla.b",
+		From:      "ucla.a",
 		RequestID: "rid-persist",
 		Type:      MessageTypeRequest,
 		Body:      "persist me",
@@ -64,7 +64,7 @@ func TestPersistentStoreRoundTrip(t *testing.T) {
 	if len(agents) != 2 {
 		t.Fatalf("expected 2 agents after restore, got %d", len(agents))
 	}
-	if agents[0].AgentID != "a" {
+	if agents[0].AgentID != "ucla.a" {
 		t.Fatalf("expected first agent to sort as a, got %s", agents[0].AgentID)
 	}
 	if agents[0].Version != "v0.5.0" || agents[0].AgentClass != "worker" || agents[0].MutationClass != "observe" {
@@ -76,7 +76,7 @@ func TestPersistentStoreRoundTrip(t *testing.T) {
 	if agents[0].Meta == nil || agents[0].Meta.HealthURL != "http://a/health" || len(agents[0].Meta.Dependencies) != 1 {
 		t.Fatalf("meta missing after restore: %#v", agents[0].Meta)
 	}
-	events, _, err := s2.PollInbox(PollInboxInput{AgentID: "b", Cursor: 0, Wait: 0})
+	events, _, err := s2.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: 0, Wait: 0})
 	if err != nil {
 		t.Fatalf("poll inbox after restore: %v", err)
 	}
@@ -111,15 +111,15 @@ func TestPersistentStoreReadSweepPersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new persistent store for read sweep test: %v", err)
 	}
-	if _, err := store.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := store.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register agent a: %v", err)
 	}
-	if _, err := store.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := store.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register agent b: %v", err)
 	}
 	msg, _, err := store.SendMessage(SendMessageInput{
-		To:         "b",
-		From:       "a",
+		To:         "ucla.b",
+		From:       "ucla.a",
 		RequestID:  "rid-sweep",
 		Type:       MessageTypeRequest,
 		Body:       "expire me",
@@ -167,10 +167,10 @@ func TestPersistentStoreAgentSecretsRoundTripAndFileMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new persistent store: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if err := s1.SetAgentSecret("a", "secret-a"); err != nil {
+	if err := s1.SetAgentSecret("ucla.a", "secret-a"); err != nil {
 		t.Fatalf("set secret: %v", err)
 	}
 
@@ -190,7 +190,7 @@ func TestPersistentStoreAgentSecretsRoundTripAndFileMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent secrets: %v", err)
 	}
-	if secrets["a"] != "secret-a" {
+	if secrets["ucla.a"] != "secret-a" {
 		t.Fatalf("secret not restored: %#v", secrets)
 	}
 }

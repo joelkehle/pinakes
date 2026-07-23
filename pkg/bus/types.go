@@ -2,6 +2,21 @@ package bus
 
 import "time"
 
+type Scope string
+
+const (
+	ScopePersonal Scope = "personal"
+	ScopeUCLA     Scope = "ucla"
+	ScopeShared   Scope = "shared"
+)
+
+type NamespaceMode string
+
+const (
+	NamespaceModeCompat NamespaceMode = "compat"
+	NamespaceModeStrict NamespaceMode = "strict"
+)
+
 type AgentMode string
 
 const (
@@ -69,6 +84,8 @@ type AgentMeta struct {
 
 type Agent struct {
 	AgentID       string      `json:"agent_id"`
+	AllowedScopes []string    `json:"allowed_scopes,omitempty"`
+	SharedGrants  []string    `json:"shared_grants,omitempty"`
 	Capabilities  []string    `json:"capabilities"`
 	Version       string      `json:"version,omitempty"`
 	Description   string      `json:"description,omitempty"`
@@ -141,6 +158,8 @@ type ObserveEvent struct {
 
 type RegisterAgentInput struct {
 	AgentID       string
+	AllowedScopes []string
+	SharedGrants  []string
 	Capabilities  []string
 	Version       string
 	Description   string
@@ -179,6 +198,8 @@ func cloneAgentMeta(in *AgentMeta) *AgentMeta {
 
 func cloneAgent(in *Agent) Agent {
 	cp := *in
+	cp.AllowedScopes = cloneStrings(in.AllowedScopes)
+	cp.SharedGrants = cloneStrings(in.SharedGrants)
 	cp.Capabilities = cloneStrings(in.Capabilities)
 	cp.Build = cloneBuildInfo(in.Build)
 	cp.Meta = cloneAgentMeta(in.Meta)
@@ -190,11 +211,13 @@ type CreateConversationInput struct {
 	Title          string
 	Participants   []string
 	Meta           any
+	ActorAgentID   string
 }
 
 type ListConversationsFilter struct {
-	Participant string
-	Status      string
+	Participant  string
+	Status       string
+	ActorAgentID string
 }
 
 type SendMessageInput struct {
@@ -242,9 +265,11 @@ type ListConversationMessagesInput struct {
 	ConversationID string
 	Cursor         int
 	Limit          int
+	ActorAgentID   string
 }
 
 type ObserveFilter struct {
 	ConversationID string
 	AgentID        string
+	ActorAgentID   string
 }

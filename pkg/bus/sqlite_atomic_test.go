@@ -34,10 +34,10 @@ func TestSQLitePersistAfterSendIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
+	if _, err := s1.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
 
@@ -48,7 +48,7 @@ func TestSQLitePersistAfterSendIsAtomic(t *testing.T) {
 	s1.testHookBeforeCommit = func() error { return injected }
 
 	_, _, err = s1.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-rollback", Type: MessageTypeRequest, Body: "should not persist",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-rollback", Type: MessageTypeRequest, Body: "should not persist",
 	})
 	if !errors.Is(err, injected) {
 		t.Fatalf("expected injected error, got %v", err)
@@ -62,7 +62,7 @@ func TestSQLitePersistAfterSendIsAtomic(t *testing.T) {
 	// with no m-000001 row — that gap is the rollback working correctly.
 	s1.testHookBeforeCommit = nil
 	good, _, err := s1.SendMessage(SendMessageInput{
-		To: "b", From: "a", RequestID: "rid-good", Type: MessageTypeRequest, Body: "should persist",
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-good", Type: MessageTypeRequest, Body: "should persist",
 	})
 	if err != nil {
 		t.Fatalf("send after rollback: %v", err)

@@ -108,28 +108,39 @@ func (s *Server) validObserveToken(r *http.Request) bool {
 	return tokenAllowed(s.observeTokens, r.URL.Query().Get("token"))
 }
 
-func (s *Server) verifyObserveAuth(r *http.Request) error {
-	if s.validObserveToken(r) {
-		return nil
-	}
-	agentID := strings.TrimSpace(r.Header.Get("X-Agent-ID"))
-	signature := strings.TrimSpace(r.Header.Get("X-Bus-Signature"))
-	if agentID == "" && signature == "" {
-		return forbiddenError("observe auth required")
-	}
-	return s.verifySignature(agentID, signature, []byte(r.URL.RawQuery))
+type scopedAuth struct {
+	AgentID string
+	Global  bool
 }
 
-func (s *Server) verifyConversationCreateAuth(r *http.Request, payload []byte) error {
-	if s.validInjectToken(r) {
-		return nil
+func (s *Server) verifyObserveAuth(r *http.Request) (scopedAuth, error) {
+	if s.validObserveToken(r) {
+		return scopedAuth{Global: true}, nil
 	}
 	agentID := strings.TrimSpace(r.Header.Get("X-Agent-ID"))
 	signature := strings.TrimSpace(r.Header.Get("X-Bus-Signature"))
 	if agentID == "" && signature == "" {
-		return forbiddenError("conversation create auth required")
+		return scopedAuth{}, forbiddenError("observe auth required")
 	}
-	return s.verifySignature(agentID, signature, payload)
+	if err := s.verifySignature(agentID, signature, []byte(r.URL.RawQuery)); err != nil {
+		return scopedAuth{}, err
+	}
+	return scopedAuth{AgentID: agentID}, nil
+}
+
+func (s *Server) verifyConversationCreateAuth(r *http.Request, payload []byte) (scopedAuth, error) {
+	if s.validInjectToken(r) {
+		return scopedAuth{Global: true}, nil
+	}
+	agentID := strings.TrimSpace(r.Header.Get("X-Agent-ID"))
+	signature := strings.TrimSpace(r.Header.Get("X-Bus-Signature"))
+	if agentID == "" && signature == "" {
+		return scopedAuth{}, forbiddenError("conversation create auth required")
+	}
+	if err := s.verifySignature(agentID, signature, payload); err != nil {
+		return scopedAuth{}, err
+	}
+	return scopedAuth{AgentID: agentID}, nil
 }
 
 func (s *Server) setAgentSecret(agentID, secret string) error {

@@ -53,7 +53,7 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 		t.Fatalf("new persistent store: %v", err)
 	}
 	if _, err := ps.RegisterAgent(RegisterAgentInput{
-		AgentID:       "a",
+		AgentID:       "ucla.a",
 		Mode:          AgentModePull,
 		Capabilities:  []string{"x"},
 		TTLSeconds:    60,
@@ -66,13 +66,13 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
-	if _, err := ps.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := ps.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register b: %v", err)
 	}
-	if err := ps.SetAgentSecret("a", "secret-a"); err != nil {
+	if err := ps.SetAgentSecret("ucla.a", "secret-a"); err != nil {
 		t.Fatalf("set secret a: %v", err)
 	}
-	if err := ps.SetAgentSecret("b", "secret-b"); err != nil {
+	if err := ps.SetAgentSecret("ucla.b", "secret-b"); err != nil {
 		t.Fatalf("set secret b: %v", err)
 	}
 	// Orphan secret: keyed to an agent that was never registered, so it has no
@@ -82,8 +82,8 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	}
 
 	done, _, err := ps.SendMessage(SendMessageInput{
-		To:        "b",
-		From:      "a",
+		To:        "ucla.b",
+		From:      "ucla.a",
 		RequestID: "rid-migrate-done",
 		Type:      MessageTypeRequest,
 		Body:      "finish me",
@@ -91,12 +91,12 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send terminal message: %v", err)
 	}
-	if err := ps.PostEvent(EventInput{ActorAgentID: "b", MessageID: done.MessageID, Type: "final", Body: "done"}); err != nil {
+	if err := ps.PostEvent(EventInput{ActorAgentID: "ucla.b", MessageID: done.MessageID, Type: "final", Body: "done"}); err != nil {
 		t.Fatalf("complete message: %v", err)
 	}
 	waiting, _, err := ps.SendMessage(SendMessageInput{
-		To:             "b",
-		From:           "a",
+		To:             "ucla.b",
+		From:           "ucla.a",
 		ConversationID: done.ConversationID,
 		RequestID:      "rid-migrate-waiting",
 		Type:           MessageTypeRequest,
@@ -130,7 +130,7 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if len(agents) != 2 {
 		t.Fatalf("expected 2 agents after migration, got %d", len(agents))
 	}
-	if agents[0].AgentID != "a" || agents[0].Version != "v0.5.0" || agents[0].AgentClass != "worker" {
+	if agents[0].AgentID != "ucla.a" || agents[0].Version != "v0.5.0" || agents[0].AgentClass != "worker" {
 		t.Fatalf("agent metadata missing after migration: %+v", agents[0])
 	}
 	if agents[0].Build == nil || agents[0].Build.Commit != "abc1234" {
@@ -144,7 +144,7 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent secrets after migration: %v", err)
 	}
-	if secrets["a"] != "secret-a" || secrets["b"] != "secret-b" {
+	if secrets["ucla.a"] != "secret-a" || secrets["ucla.b"] != "secret-b" {
 		t.Fatalf("secrets missing after migration: %#v", secrets)
 	}
 	if _, ok := secrets["ghost"]; ok {
@@ -198,8 +198,8 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 
 	// Counters must survive: new ids continue past the migrated ones.
 	fresh, _, err := ss.SendMessage(SendMessageInput{
-		To:        "b",
-		From:      "a",
+		To:        "ucla.b",
+		From:      "ucla.a",
 		RequestID: "rid-migrate-fresh",
 		Type:      MessageTypeRequest,
 		Body:      "fresh after migration",
@@ -227,12 +227,12 @@ func TestMigrateJSONStateToSQLiteRecoversFromCrashedImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new persistent store: %v", err)
 	}
-	if _, err := ps.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := ps.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("register a: %v", err)
 	}
 	msg, _, err := ps.SendMessage(SendMessageInput{
-		To:        "a",
-		From:      "a",
+		To:        "ucla.a",
+		From:      "ucla.a",
 		RequestID: "rid-crash-retry",
 		Type:      MessageTypeRequest,
 		Body:      "survive retry",
@@ -270,14 +270,14 @@ func TestMigrateJSONStateToSQLiteRecoversFromCrashedImport(t *testing.T) {
 	defer ss.Close()
 
 	agents := ss.ListAgents("")
-	if len(agents) != 1 || agents[0].AgentID != "a" {
+	if len(agents) != 1 || agents[0].AgentID != "ucla.a" {
 		t.Fatalf("expected migrated agent a, got %+v", agents)
 	}
 	got, ok := ss.GetMessageForTest(msg.MessageID)
 	if !ok {
 		t.Fatalf("migrated message missing")
 	}
-	if got.Body != "survive retry" || got.From != "a" || got.To != "a" {
+	if got.Body != "survive retry" || got.From != "ucla.a" || got.To != "ucla.a" {
 		t.Fatalf("migrated message mismatch: %+v", got)
 	}
 }

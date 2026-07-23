@@ -64,10 +64,10 @@ func newBenchmarkBackend(b *testing.B, factory backendFactory) API {
 	b.Helper()
 
 	store := factory.make(b)
-	if _, err := store.RegisterAgent(RegisterAgentInput{AgentID: "a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
+	if _, err := store.RegisterAgent(RegisterAgentInput{AgentID: "ucla.a", Mode: AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		b.Fatalf("register a: %v", err)
 	}
-	if _, err := store.RegisterAgent(RegisterAgentInput{AgentID: "b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
+	if _, err := store.RegisterAgent(RegisterAgentInput{AgentID: "ucla.b", Mode: AgentModePull, Capabilities: []string{"y"}, TTLSeconds: 60}); err != nil {
 		b.Fatalf("register b: %v", err)
 	}
 	return store
@@ -82,8 +82,8 @@ func BenchmarkBackendSendMessage(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				_, _, err := store.SendMessage(SendMessageInput{
-					To:        "b",
-					From:      "a",
+					To:        "ucla.b",
+					From:      "ucla.a",
 					RequestID: "rid-bench-" + strconv.Itoa(i),
 					Type:      MessageTypeRequest,
 					Body:      "payload",
@@ -102,8 +102,8 @@ func BenchmarkBackendPollInbox(b *testing.B) {
 			store := newBenchmarkBackend(b, factory)
 			for i := 0; i < 100; i++ {
 				if _, _, err := store.SendMessage(SendMessageInput{
-					To:        "b",
-					From:      "a",
+					To:        "ucla.b",
+					From:      "ucla.a",
 					RequestID: "rid-poll-" + strconv.Itoa(i),
 					Type:      MessageTypeRequest,
 					Body:      "payload",
@@ -112,7 +112,7 @@ func BenchmarkBackendPollInbox(b *testing.B) {
 				}
 			}
 
-			events, _, err := store.PollInbox(PollInboxInput{AgentID: "b", Cursor: 0, Wait: 0})
+			events, _, err := store.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: 0, Wait: 0})
 			if err != nil {
 				b.Fatalf("sanity poll failed: %v", err)
 			}
@@ -124,7 +124,7 @@ func BenchmarkBackendPollInbox(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				// Cursor 0 keeps the reclaim base fixed, so this repeatedly reads the same backlog.
-				if _, _, err := store.PollInbox(PollInboxInput{AgentID: "b", Cursor: 0, Wait: 0}); err != nil {
+				if _, _, err := store.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: 0, Wait: 0}); err != nil {
 					b.Fatalf("poll failed at i=%d: %v", i, err)
 				}
 			}
@@ -142,8 +142,8 @@ func BenchmarkBackendRoundTrip(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				m, _, err := store.SendMessage(SendMessageInput{
-					To:        "b",
-					From:      "a",
+					To:        "ucla.b",
+					From:      "ucla.a",
 					RequestID: "rid-rt-" + strconv.Itoa(i),
 					Type:      MessageTypeRequest,
 					Body:      "payload",
@@ -152,13 +152,13 @@ func BenchmarkBackendRoundTrip(b *testing.B) {
 					b.Fatalf("send failed at i=%d: %v", i, err)
 				}
 
-				_, next, err := store.PollInbox(PollInboxInput{AgentID: "b", Cursor: cursor, Wait: 0})
+				_, next, err := store.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: cursor, Wait: 0})
 				if err != nil {
 					b.Fatalf("poll failed at i=%d: %v", i, err)
 				}
 				cursor = next
 
-				if err := store.Ack(AckInput{AgentID: "b", MessageID: m.MessageID, Status: "accepted"}); err != nil {
+				if err := store.Ack(AckInput{AgentID: "ucla.b", MessageID: m.MessageID, Status: "accepted"}); err != nil {
 					b.Fatalf("ack failed at i=%d: %v", i, err)
 				}
 			}
