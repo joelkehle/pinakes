@@ -211,6 +211,7 @@ type CreateConversationInput struct {
 	Title          string
 	Participants   []string
 	Meta           any
+	ActorAgentID   string
 }
 
 type ListConversationsFilter struct {

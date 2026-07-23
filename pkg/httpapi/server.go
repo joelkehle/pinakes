@@ -479,9 +479,14 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 			writeBusError(w, busErrorOrValidation(err))
 			return
 		}
-		if err := s.verifyConversationCreateAuth(r, blob); err != nil {
+		auth, err := s.verifyConversationCreateAuth(r, blob)
+		if err != nil {
 			writeBusError(w, err)
 			return
+		}
+		actor := ""
+		if !auth.Global {
+			actor = auth.AgentID
 		}
 		var req struct {
 			ConversationID string   `json:"conversation_id"`
@@ -498,6 +503,7 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 			Title:          req.Title,
 			Participants:   req.Participants,
 			Meta:           req.Meta,
+			ActorAgentID:   actor,
 		})
 		if err != nil {
 			writeBusError(w, err)
