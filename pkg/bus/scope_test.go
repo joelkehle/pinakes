@@ -8,13 +8,14 @@ import (
 	"time"
 )
 
-func newScopeTestStore(logBuf *bytes.Buffer) *Store {
+func newScopeTestStore(logBuf *bytes.Buffer, sharedGrantAgents ...string) *Store {
 	logger := log.New(logBuf, "", 0)
 	return NewStore(Config{
 		Clock: func() time.Time {
 			return time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
 		},
-		Logger: logger,
+		Logger:            logger,
+		SharedGrantAgents: sharedGrantAgents,
 	})
 }
 
@@ -37,6 +38,7 @@ func TestScopeMatrixForPublish(t *testing.T) {
 		from    string
 		scopes  []string
 		grants  []string
+		policy  []string
 		to      string
 		wantErr bool
 	}{
@@ -44,21 +46,17 @@ func TestScopeMatrixForPublish(t *testing.T) {
 		{name: "personal to ucla denied", from: "personal.sender", scopes: []string{"personal"}, to: "ucla.target", wantErr: true},
 		{name: "ucla to ucla", from: "ucla.sender", scopes: []string{"ucla"}, to: "ucla.target"},
 		{name: "ucla to personal denied", from: "ucla.sender", scopes: []string{"ucla"}, to: "personal.target", wantErr: true},
-		{name: "ucla with shared membership denied", from: "ucla.sender", scopes: []string{"ucla", "shared"}, to: "shared.target", wantErr: true},
-		{name: "ucla with shared grant allowed", from: "ucla.sender", scopes: []string{"ucla"}, grants: []string{"shared"}, to: "shared.target"},
+		{name: "ucla with shared membership denied", from: "ucla.sender", scopes: []string{"ucla", "shared"}, policy: []string{"shared.target"}, to: "shared.target", wantErr: true},
+		{name: "ucla with server shared grant allowed", from: "ucla.sender", scopes: []string{"ucla"}, grants: []string{"shared"}, policy: []string{"ucla.sender", "shared.target"}, to: "shared.target"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			s := newScopeTestStore(&logs)
+			s := newScopeTestStore(&logs, tc.policy...)
 			mustRegisterScoped(t, s, tc.from, tc.scopes, tc.grants)
 			targetScope, _ := ScopeOfName(tc.to)
-			targetGrants := []string(nil)
-			if targetScope == ScopeShared {
-				targetGrants = []string{"shared"}
-			}
-			mustRegisterScoped(t, s, tc.to, []string{string(targetScope)}, targetGrants)
+			mustRegisterScoped(t, s, tc.to, []string{string(targetScope)}, nil)
 
 			_, _, err := s.SendMessage(SendMessageInput{
 				From:      tc.from,
@@ -122,6 +120,7 @@ func TestSharedRequiresExplicitGrantForSubscribe(t *testing.T) {
 	if _, err := s.RegisterAgent(RegisterAgentInput{
 		AgentID:       "shared.worker",
 		AllowedScopes: []string{"shared"},
+		SharedGrants:  []string{"shared"},
 		Mode:          AgentModePull,
 		TTLSeconds:    60,
 	}); err == nil {
@@ -130,5 +129,57 @@ func TestSharedRequiresExplicitGrantForSubscribe(t *testing.T) {
 	if !strings.Contains(logs.String(), "shared grant required") {
 		t.Fatalf("expected shared grant denial log, got %q", logs.String())
 	}
+	s = newScopeTestStore(&logs, "shared.worker")
 	mustRegisterScoped(t, s, "shared.worker", []string{"shared"}, []string{"shared"})
+}
+
+func TestRegistrationClaimsCannotSelfEscalateScopes(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "ucla.sender", []string{"ucla", "personal"}, nil)
+	mustRegisterScoped(t, s, "personal.target", []string{"personal"}, nil)
+
+	agent := s.ListAgents("")[1]
+	if agent.AgentID != "ucla.sender" {
+		t.Fatalf("expected ucla.sender to sort second, got %s", agent.AgentID)
+	}
+	if got := strings.Join(agent.AllowedScopes, ","); got != "ucla" {
+		t.Fatalf("registration claim changed effective scopes: %q", got)
+	}
+
+	_, _, err := s.SendMessage(SendMessageInput{
+		From:      "ucla.sender",
+		To:        "personal.target",
+		RequestID: "rid-self-scope",
+		Type:      MessageTypeRequest,
+		Body:      "no escalation",
+	})
+	if err == nil {
+		t.Fatalf("expected self-claimed personal scope to be denied")
+	}
+}
+
+func TestRegistrationClaimsCannotSelfGrantSharedAccess(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs, "shared.target")
+	mustRegisterScoped(t, s, "ucla.sender", []string{"ucla"}, []string{"shared"})
+	mustRegisterScoped(t, s, "shared.target", []string{"shared"}, nil)
+
+	agents := s.ListAgents("")
+	for _, agent := range agents {
+		if agent.AgentID == "ucla.sender" && len(agent.SharedGrants) != 0 {
+			t.Fatalf("registration claim changed effective shared grants: %#v", agent.SharedGrants)
+		}
+	}
+
+	_, _, err := s.SendMessage(SendMessageInput{
+		From:      "ucla.sender",
+		To:        "shared.target",
+		RequestID: "rid-self-shared",
+		Type:      MessageTypeRequest,
+		Body:      "no shared escalation",
+	})
+	if err == nil {
+		t.Fatalf("expected self-claimed shared grant to be denied")
+	}
 }

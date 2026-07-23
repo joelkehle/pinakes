@@ -64,11 +64,7 @@ func normalizeSharedGrants(grants []string) ([]string, error) {
 	return out, nil
 }
 
-func agentAllowedScopes(agentID string, scopes []string) []string {
-	normalized, err := normalizeScopes(scopes)
-	if err == nil && len(normalized) > 0 {
-		return normalized
-	}
+func agentAllowedScopes(agentID string) []string {
 	scope, ok := ScopeOfName(agentID)
 	if !ok {
 		return nil
@@ -76,8 +72,8 @@ func agentAllowedScopes(agentID string, scopes []string) []string {
 	return []string{string(scope)}
 }
 
-func agentHasScope(agent *Agent, scope Scope) bool {
-	for _, allowed := range agentAllowedScopes(agent.AgentID, agent.AllowedScopes) {
+func agentHasScope(agentID string, scope Scope) bool {
+	for _, allowed := range agentAllowedScopes(agentID) {
 		if allowed == string(scope) {
 			return true
 		}
@@ -85,12 +81,22 @@ func agentHasScope(agent *Agent, scope Scope) bool {
 	return false
 }
 
-func agentHasSharedGrant(agent *Agent) bool {
-	grants, err := normalizeSharedGrants(agent.SharedGrants)
-	if err != nil {
-		return false
+func (s *Store) agentSharedGrants(agentID string) []string {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil
 	}
-	for _, grant := range grants {
+	for _, raw := range s.cfg.SharedGrantAgents {
+		allowed := strings.TrimSpace(raw)
+		if allowed == agentID {
+			return []string{string(ScopeShared)}
+		}
+	}
+	return nil
+}
+
+func (s *Store) agentHasSharedGrant(agentID string) bool {
+	for _, grant := range s.agentSharedGrants(agentID) {
 		if grant == string(ScopeShared) {
 			return true
 		}

@@ -75,6 +75,10 @@ type Config struct {
 	SweepMinInterval time.Duration
 	Clock            func() time.Time
 	Logger           *log.Logger
+	// SharedGrantAgents is the server-authoritative list of identities that
+	// may access shared.* resources. Registration bodies may request grants,
+	// but only this policy takes effect.
+	SharedGrantAgents []string
 }
 
 type idempotencyEntry struct {
@@ -291,13 +295,13 @@ func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) err
 		return newError(CodeValidation, "topic/queue name must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if scope == ScopeShared {
-		if agentHasSharedGrant(agent) {
+		if s.agentHasSharedGrant(agent.AgentID) {
 			return nil
 		}
 		s.logScopeDenied(action, agent.AgentID, resource, "shared grant required")
 		return newError(CodeUnauthorized, "shared.* access requires explicit shared grant", false, 0)
 	}
-	if agentHasScope(agent, scope) {
+	if agentHasScope(agent.AgentID, scope) {
 		return nil
 	}
 	s.logScopeDenied(action, agent.AgentID, resource, "scope not allowed")
@@ -755,17 +759,14 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if _, ok := ScopeOfName(agentID); !ok {
 		return nil, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
 	}
-	allowedScopes, err := normalizeScopes(input.AllowedScopes)
-	if err != nil {
+	if _, err := normalizeScopes(input.AllowedScopes); err != nil {
 		return nil, err
 	}
-	if len(allowedScopes) == 0 {
-		allowedScopes = agentAllowedScopes(agentID, nil)
-	}
-	sharedGrants, err := normalizeSharedGrants(input.SharedGrants)
-	if err != nil {
+	if _, err := normalizeSharedGrants(input.SharedGrants); err != nil {
 		return nil, err
 	}
+	allowedScopes := agentAllowedScopes(agentID)
+	sharedGrants := s.agentSharedGrants(agentID)
 	mode := input.Mode
 	if mode == "" {
 		mode = AgentModePull

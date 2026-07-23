@@ -51,6 +51,21 @@ func envInt(name string) int {
 	return v
 }
 
+func envCSV(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+	out := []string{}
+	for _, entry := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(entry)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func runHTTPServer(addr string, handler http.Handler, store bus.API) {
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -135,6 +150,7 @@ func main() {
 		AgentRetention:        envSeconds("AGENT_RETENTION_SECONDS"),
 		MaxInboxBytesPerAgent: envInt("MAX_INBOX_BYTES_PER_AGENT"),
 		MaxObserveBytes:       envInt("MAX_OBSERVE_BYTES"),
+		SharedGrantAgents:     envCSV("SHARED_GRANT_AGENTS"),
 	}
 
 	// Resolve DB path: --db flag > DB_PATH env > backend default. An explicit

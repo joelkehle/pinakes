@@ -44,6 +44,7 @@ Runtime config:
 - `HUMAN_ALLOWLIST`
 - `INJECT_TOKENS`
 - `OBSERVE_TOKENS`
+- `SHARED_GRANT_AGENTS`
 
 Contract doc:
 
