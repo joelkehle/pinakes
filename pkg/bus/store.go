@@ -75,6 +75,13 @@ type Config struct {
 	SweepMinInterval time.Duration
 	Clock            func() time.Time
 	Logger           *log.Logger
+	// NamespaceMode controls the migration window for namespace-prefixed IDs.
+	// "compat" accepts legacy unprefixed IDs and assigns them LegacyScope.
+	// "strict" rejects unprefixed IDs. Defaults to compat.
+	NamespaceMode NamespaceMode
+	// LegacyScope is the server-authoritative scope assigned to unprefixed
+	// IDs while NamespaceMode is compat. Defaults to ucla.
+	LegacyScope Scope
 	// SharedGrantAgents is the server-authoritative list of identities that
 	// may access shared.* resources. Registration bodies may request grants,
 	// but only this policy takes effect.
@@ -226,6 +233,18 @@ func NewStore(cfg Config) *Store {
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now
 	}
+	if cfg.NamespaceMode == "" {
+		cfg.NamespaceMode = NamespaceModeCompat
+	}
+	if cfg.NamespaceMode != NamespaceModeCompat && cfg.NamespaceMode != NamespaceModeStrict {
+		cfg.NamespaceMode = NamespaceModeCompat
+	}
+	if cfg.LegacyScope == "" {
+		cfg.LegacyScope = ScopeUCLA
+	}
+	if _, ok := validScopes[cfg.LegacyScope]; !ok || cfg.LegacyScope == ScopeShared {
+		cfg.LegacyScope = ScopeUCLA
+	}
 
 	allowlist := map[string]struct{}{}
 	for _, raw := range strings.Split(os.Getenv("HUMAN_ALLOWLIST"), ",") {
@@ -289,7 +308,7 @@ func (s *Store) logScopeDenied(action, identity, resource, reason string) {
 }
 
 func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) error {
-	scope, ok := ScopeOfName(resource)
+	scope, ok := s.scopeOfName(resource)
 	if !ok {
 		s.logScopeDenied(action, agent.AgentID, resource, "unprefixed resource")
 		return newError(CodeValidation, "topic/queue name must be prefixed with personal., ucla., or shared.", false, 0)
@@ -301,7 +320,7 @@ func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) err
 		s.logScopeDenied(action, agent.AgentID, resource, "shared grant required")
 		return newError(CodeUnauthorized, "shared.* access requires explicit shared grant", false, 0)
 	}
-	if agentHasScope(agent.AgentID, scope) {
+	if s.agentHasScope(agent.AgentID, scope) {
 		return nil
 	}
 	s.logScopeDenied(action, agent.AgentID, resource, "scope not allowed")
@@ -756,7 +775,7 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if agentID == "" {
 		return nil, newError(CodeValidation, "agent_id is required", false, 0)
 	}
-	if _, ok := ScopeOfName(agentID); !ok {
+	if _, ok := s.scopeOfName(agentID); !ok {
 		return nil, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if _, err := normalizeScopes(input.AllowedScopes); err != nil {
@@ -765,7 +784,7 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if _, err := normalizeSharedGrants(input.SharedGrants); err != nil {
 		return nil, err
 	}
-	allowedScopes := agentAllowedScopes(agentID)
+	allowedScopes := s.agentAllowedScopes(agentID)
 	sharedGrants := s.agentSharedGrants(agentID)
 	mode := input.Mode
 	if mode == "" {
@@ -882,7 +901,7 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 		if strings.TrimSpace(participant) == "" {
 			continue
 		}
-		if _, ok := ScopeOfName(participant); !ok {
+		if _, ok := s.scopeOfName(participant); !ok {
 			return nil, newError(CodeValidation, "participants must be prefixed with personal., ucla., or shared.", false, 0)
 		}
 	}
@@ -936,13 +955,13 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 	if to == "" {
 		return nil, false, newError(CodeValidation, "to is required", false, 0)
 	}
-	if _, ok := ScopeOfName(to); !ok {
+	if _, ok := s.scopeOfName(to); !ok {
 		return nil, false, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if from == "" {
 		return nil, false, newError(CodeValidation, "from is required", false, 0)
 	}
-	if _, ok := ScopeOfName(from); !ok {
+	if _, ok := s.scopeOfName(from); !ok {
 		return nil, false, newError(CodeValidation, "from must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if requestID == "" {
@@ -1120,7 +1139,7 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 	if agentID == "" {
 		return nil, 0, newError(CodeValidation, "agent_id is required", false, 0)
 	}
-	if _, ok := ScopeOfName(agentID); !ok {
+	if _, ok := s.scopeOfName(agentID); !ok {
 		return nil, 0, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 
@@ -1382,7 +1401,7 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 		return nil, newError(CodeValidation, "identity and body are required", false, 0)
 	}
 	if to != "" {
-		if _, ok := ScopeOfName(to); !ok {
+		if _, ok := s.scopeOfName(to); !ok {
 			return nil, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
 		}
 	}

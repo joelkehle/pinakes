@@ -21,6 +21,20 @@ func ScopeOfName(name string) (Scope, bool) {
 	return scope, valid
 }
 
+func (s *Store) scopeOfName(name string) (Scope, bool) {
+	if scope, ok := ScopeOfName(name); ok {
+		return scope, true
+	}
+	if s.cfg.NamespaceMode != NamespaceModeCompat {
+		return "", false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", false
+	}
+	return s.cfg.LegacyScope, true
+}
+
 func normalizeScopes(scopes []string) ([]string, error) {
 	seen := map[Scope]struct{}{}
 	out := []string{}
@@ -72,8 +86,16 @@ func agentAllowedScopes(agentID string) []string {
 	return []string{string(scope)}
 }
 
-func agentHasScope(agentID string, scope Scope) bool {
-	for _, allowed := range agentAllowedScopes(agentID) {
+func (s *Store) agentAllowedScopes(agentID string) []string {
+	scope, ok := s.scopeOfName(agentID)
+	if !ok {
+		return nil
+	}
+	return []string{string(scope)}
+}
+
+func (s *Store) agentHasScope(agentID string, scope Scope) bool {
+	for _, allowed := range s.agentAllowedScopes(agentID) {
 		if allowed == string(scope) {
 			return true
 		}

@@ -150,6 +150,8 @@ func main() {
 		AgentRetention:        envSeconds("AGENT_RETENTION_SECONDS"),
 		MaxInboxBytesPerAgent: envInt("MAX_INBOX_BYTES_PER_AGENT"),
 		MaxObserveBytes:       envInt("MAX_OBSERVE_BYTES"),
+		NamespaceMode:         bus.NamespaceMode(strings.TrimSpace(os.Getenv("BUS_NAMESPACE_MODE"))),
+		LegacyScope:           bus.Scope(strings.TrimSpace(os.Getenv("BUS_LEGACY_SCOPE"))),
 		SharedGrantAgents:     envCSV("SHARED_GRANT_AGENTS"),
 	}
 

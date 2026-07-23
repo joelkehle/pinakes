@@ -98,7 +98,13 @@ func TestUCLAPublishToPersonalDeniedAndLogged(t *testing.T) {
 
 func TestUnprefixedQueueNamesRejected(t *testing.T) {
 	var logs bytes.Buffer
-	s := newScopeTestStore(&logs)
+	s := NewStore(Config{
+		NamespaceMode: NamespaceModeStrict,
+		Logger:        log.New(&logs, "", 0),
+		Clock: func() time.Time {
+			return time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
+		},
+	})
 	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "worker", Mode: AgentModePull}); err == nil {
 		t.Fatalf("expected unprefixed registration to fail")
 	}
@@ -111,6 +117,89 @@ func TestUnprefixedQueueNamesRejected(t *testing.T) {
 		Body:      "hello",
 	}); err == nil {
 		t.Fatalf("expected unprefixed target to fail")
+	}
+}
+
+func TestCompatModeAcceptsLegacyIDsForRegisterSendAndPoll(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "legacy-sender", nil, nil)
+	mustRegisterScoped(t, s, "legacy-target", nil, nil)
+
+	agents := s.ListAgents("")
+	for _, agent := range agents {
+		if strings.HasPrefix(agent.AgentID, "legacy-") {
+			if got := strings.Join(agent.AllowedScopes, ","); got != string(ScopeUCLA) {
+				t.Fatalf("legacy agent %s effective scope=%q want ucla", agent.AgentID, got)
+			}
+		}
+	}
+
+	msg, _, err := s.SendMessage(SendMessageInput{
+		From:      "legacy-sender",
+		To:        "legacy-target",
+		RequestID: "rid-legacy",
+		Type:      MessageTypeRequest,
+		Body:      "compat works",
+	})
+	if err != nil {
+		t.Fatalf("send legacy message in compat mode: %v", err)
+	}
+	events, _, err := s.PollInbox(PollInboxInput{AgentID: "legacy-target", Cursor: 0, Wait: 0})
+	if err != nil {
+		t.Fatalf("poll legacy inbox in compat mode: %v", err)
+	}
+	if len(events) != 1 || events[0].MessageID != msg.MessageID {
+		t.Fatalf("legacy inbox event mismatch: %#v", events)
+	}
+}
+
+func TestStrictModeRejectsLegacyIDs(t *testing.T) {
+	var logs bytes.Buffer
+	s := NewStore(Config{
+		NamespaceMode: NamespaceModeStrict,
+		Logger:        log.New(&logs, "", 0),
+		Clock: func() time.Time {
+			return time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
+		},
+	})
+
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "legacy-agent", Mode: AgentModePull}); err == nil {
+		t.Fatalf("expected strict mode to reject unprefixed registration")
+	}
+	mustRegisterScoped(t, s, "ucla.sender", nil, nil)
+	if _, _, err := s.SendMessage(SendMessageInput{
+		From:      "ucla.sender",
+		To:        "legacy-target",
+		RequestID: "rid-strict-send",
+		Type:      MessageTypeRequest,
+		Body:      "blocked",
+	}); err == nil {
+		t.Fatalf("expected strict mode to reject unprefixed send target")
+	}
+	if _, _, err := s.PollInbox(PollInboxInput{AgentID: "legacy-target", Cursor: 0, Wait: 0}); err == nil {
+		t.Fatalf("expected strict mode to reject unprefixed inbox")
+	}
+}
+
+func TestCompatLegacyIDCannotCrossScope(t *testing.T) {
+	var logs bytes.Buffer
+	s := newScopeTestStore(&logs)
+	mustRegisterScoped(t, s, "legacy-sender", []string{"personal"}, nil)
+	mustRegisterScoped(t, s, "personal.target", nil, nil)
+
+	_, _, err := s.SendMessage(SendMessageInput{
+		From:      "legacy-sender",
+		To:        "personal.target",
+		RequestID: "rid-legacy-cross",
+		Type:      MessageTypeRequest,
+		Body:      "blocked",
+	})
+	if err == nil {
+		t.Fatalf("expected legacy ucla identity to be denied personal publish")
+	}
+	if !strings.Contains(logs.String(), "identity=legacy-sender") || !strings.Contains(logs.String(), "resource=personal.target") {
+		t.Fatalf("expected legacy cross-scope denial log, got %q", logs.String())
 	}
 }
 

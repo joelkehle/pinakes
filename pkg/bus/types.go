@@ -10,6 +10,13 @@ const (
 	ScopeShared   Scope = "shared"
 )
 
+type NamespaceMode string
+
+const (
+	NamespaceModeCompat NamespaceMode = "compat"
+	NamespaceModeStrict NamespaceMode = "strict"
+)
+
 type AgentMode string
 
 const (
