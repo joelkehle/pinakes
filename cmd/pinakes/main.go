@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -64,6 +65,26 @@ func envCSV(name string) []string {
 		}
 	}
 	return out
+}
+
+func parseNamespaceConfig(modeRaw, legacyScopeRaw string) (bus.NamespaceMode, bus.Scope, error) {
+	mode := bus.NamespaceMode(strings.TrimSpace(modeRaw))
+	if mode == "" {
+		mode = bus.NamespaceModeCompat
+	}
+	if mode != bus.NamespaceModeCompat && mode != bus.NamespaceModeStrict {
+		return "", "", fmt.Errorf("BUS_NAMESPACE_MODE must be compat or strict, got %q", modeRaw)
+	}
+
+	legacyScope := bus.Scope(strings.TrimSpace(legacyScopeRaw))
+	if legacyScope == "" {
+		legacyScope = bus.ScopeUCLA
+	}
+	if legacyScope != bus.ScopePersonal && legacyScope != bus.ScopeUCLA {
+		return "", "", fmt.Errorf("BUS_LEGACY_SCOPE must be personal or ucla, got %q", legacyScopeRaw)
+	}
+
+	return mode, legacyScope, nil
 }
 
 func runHTTPServer(addr string, handler http.Handler, store bus.API) {
@@ -129,6 +150,13 @@ func main() {
 	if port := os.Getenv("PORT"); port != "" {
 		addr = ":" + port
 	}
+	namespaceMode, legacyScope, err := parseNamespaceConfig(
+		os.Getenv("BUS_NAMESPACE_MODE"),
+		os.Getenv("BUS_LEGACY_SCOPE"),
+	)
+	if err != nil {
+		log.Fatalf("invalid namespace configuration: %v", err)
+	}
 
 	cfg := bus.Config{
 		GracePeriod:            30 * time.Second,
@@ -150,8 +178,8 @@ func main() {
 		AgentRetention:        envSeconds("AGENT_RETENTION_SECONDS"),
 		MaxInboxBytesPerAgent: envInt("MAX_INBOX_BYTES_PER_AGENT"),
 		MaxObserveBytes:       envInt("MAX_OBSERVE_BYTES"),
-		NamespaceMode:         bus.NamespaceMode(strings.TrimSpace(os.Getenv("BUS_NAMESPACE_MODE"))),
-		LegacyScope:           bus.Scope(strings.TrimSpace(os.Getenv("BUS_LEGACY_SCOPE"))),
+		NamespaceMode:         namespaceMode,
+		LegacyScope:           legacyScope,
 		SharedGrantAgents:     envCSV("SHARED_GRANT_AGENTS"),
 	}
 
