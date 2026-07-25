@@ -22,8 +22,8 @@ The release contains:
 
 - namespace compatibility support for the existing JK and UCLA authorities;
 - explicit rollout configuration for legacy identity and resource handling;
-- fail-closed startup validation when namespace rollout configuration is
-  missing, invalid, or internally inconsistent;
+- fail-closed startup validation when a non-empty namespace rollout setting is
+  invalid; unset settings retain the documented compatibility defaults;
 - contract and operator documentation for the compatibility boundary.
 
 This release does not consolidate the two authorities, implement the held WP4
@@ -94,6 +94,7 @@ Release verification uses the published artifact, not GitHub Actions:
 
    ```bash
    git ls-remote --tags origin refs/tags/v0.4.0
+   git ls-remote --tags origin 'refs/tags/v0.4.0^{}'
    git rev-list -n 1 v0.4.0
    ```
 
