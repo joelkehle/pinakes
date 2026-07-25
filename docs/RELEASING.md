@@ -90,50 +90,18 @@ This triggers the GHCR image build for:
 
 Release verification uses the published artifact, not GitHub Actions:
 
-1. Confirm the remote tag resolves to the locally validated release commit:
+Run the fail-closed verifier. It requires the remote tag to match the local
+validated commit, waits for no missing artifact, checks the published manifest,
+extracts the binary from a disposable container, and requires its embedded Go
+VCS revision and module version to match the tag:
 
-   ```bash
-   git ls-remote --tags origin refs/tags/v0.4.0
-   git ls-remote --tags origin 'refs/tags/v0.4.0^{}'
-   git rev-list -n 1 v0.4.0
-   ```
+```bash
+./deploy/verify-release.sh v0.4.0
+```
 
-2. Confirm the tagged GHCR manifest is published:
-
-   ```bash
-   docker manifest inspect ghcr.io/joelkehle/pinakes:v0.4.0
-   ```
-
-3. Pull the tagged image, extract its binary from a disposable container, and
-   require the embedded Go VCS revision to match the validated release commit.
-   The verification fails if the revision is absent, mismatched, or marked
-   modified:
-
-   ```bash
-   release_commit="$(git rev-list -n 1 v0.4.0)"
-   artifact_dir="$(mktemp -d)"
-   docker pull ghcr.io/joelkehle/pinakes:v0.4.0
-   docker run --rm --entrypoint /bin/sh \
-     -v "$artifact_dir:/out" \
-     ghcr.io/joelkehle/pinakes:v0.4.0 \
-     -c 'cp /usr/local/bin/pinakes /out/pinakes'
-   artifact_revision="$(
-     go version -m "$artifact_dir/pinakes" |
-       awk -F= '$1 ~ /vcs.revision$/ {print $2}'
-   )"
-   artifact_modified="$(
-     go version -m "$artifact_dir/pinakes" |
-       awk -F= '$1 ~ /vcs.modified$/ {print $2}'
-   )"
-   test -n "$artifact_revision"
-   test "$artifact_revision" = "$release_commit"
-   test "$artifact_modified" = false
-   docker image inspect ghcr.io/joelkehle/pinakes:v0.4.0 \
-     --format '{{index .RepoDigests 0}}'
-   trash "$artifact_dir"
-   ```
-
-4. Record tag, image digest, source revision, and local gate result in the
+The command exits nonzero if any tag, manifest, revision, clean-build, module
+version, or digest assertion fails. Record its tag, commit, image digest, and
+clean-build result with the local gate result in the
    release handoff before any deployment consumes the image.
 
 Deployment is a separate step with its own acceptance and rollback checks.
