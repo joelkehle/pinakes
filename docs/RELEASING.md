@@ -1,8 +1,8 @@
 ---
-summary: Human release checklist for pinakes tags. Current line is v0.3.0 (memory retention, deployed to both buses 2026-06-10); the v0.2.0 passport baseline is kept below as history.
+summary: Human release checklist for Pinakes tags. v0.4.0 is the approved namespace compatibility and fail-closed rollout; earlier release lines are retained as history.
 read_when:
   - preparing a new pinakes tag
-  - reviewing the v0.3.0 retention line or the v0.2.0 passport baseline
+  - reviewing the v0.4.0 namespace rollout or an earlier release line
   - coordinating downstream repo upgrades after a pinakes release
 status: working draft
 ---
@@ -13,9 +13,25 @@ status: working draft
 
 Do not tag or release without explicit Joel approval.
 
-## v0.3.0 (current)
+## v0.4.0 (approved release boundary)
 
-`v0.3.0` is the current release line. It was deployed to both buses (UCLA `:8080`, JK `:8081`) on 2026-06-10.
+`v0.4.0` is approved for release. This statement records approval and intended
+contents; it does not claim that the tag, image, or any deployment is complete.
+
+The release contains:
+
+- namespace compatibility support for the existing JK and UCLA authorities;
+- explicit rollout configuration for legacy identity and resource handling;
+- fail-closed startup validation when a non-empty namespace rollout setting is
+  invalid; unset settings retain the documented compatibility defaults;
+- contract and operator documentation for the compatibility boundary.
+
+This release does not consolidate the two authorities, implement the held WP4
+identity design, change public exposure, or settle WP2 recovery semantics.
+
+## v0.3.0 (history)
+
+`v0.3.0` was deployed to both buses (UCLA `:8080`, JK `:8081`) on 2026-06-10.
 
 What shipped on this line:
 
@@ -28,7 +44,7 @@ What shipped on this line:
 ## v0.2.0 Baseline (history)
 
 `v0.2.0` is the first passport-capable release line.
-It is already released, and the shared bus runtime is deployed on that line.
+It is already released and was the first deployed passport baseline.
 
 It is the clean dependency boundary for downstream repos to consume:
 
@@ -39,58 +55,72 @@ It is the clean dependency boundary for downstream repos to consume:
 ## Pre-Tag Checklist
 
 1. Confirm the repo gate passes via the validation entrypoint:
-   - `agent-check` (runs `gofmt`, `go build ./...`, and `go test ./...`)
+   - `gofmt -l .` returns no files
+   - `go build ./...`
+   - `go test ./...`
+   - `agent-check`
+   - run all checks on the exact commit intended for the tag
 2. Confirm docs are in place and consistent:
    - `docs/BUS_HTTP_CONTRACT.md` — protocol contract; must reflect any protocol change in the release
+   - `docs/JK-SPEC-BUSFT-001.md` and `docs/BUSFT-ISSUES.md` — rollout boundary and held decisions
    - `docs/REFACTOR_BACKLOG.md` — deferred items reviewed; anything shipped this line marked DONE
    - `docs/AGENT_CITIZENSHIP.md`
    - `docs/PROTOCOL_DELTA.md`
    - `docs/PHASE5_PASSPORT_ROLLOUT.md`
-3. Confirm `README.md` reflects the release boundary:
-   - downstreams start clean passport adoption at `v0.2.0+`
-4. Review the worktree and ensure the intended release contents are present.
+3. Confirm `README.md` reflects the release boundary and required rollout
+   configuration.
+4. Review `git status --short`, `git diff`, and the candidate commit; ensure the
+   worktree has no unintended uncommitted changes.
 5. Get explicit Joel approval to tag.
 
 ## Tag And Publish
 
-Historical command sequence for the `v0.2.0` baseline:
+After the candidate commit passes the local gate:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag -a v0.4.0 -m "Release v0.4.0"
+git push origin v0.4.0
 ```
 
 This triggers the GHCR image build for:
 
-- `ghcr.io/joelkehle/pinakes:v0.2.0`
+- `ghcr.io/joelkehle/pinakes:v0.4.0`
 
 ## Post-Tag Verification
 
-1. Confirm the GitHub release workflow succeeds.
-2. Confirm the image is published on the expected tag line.
-3. Confirm the shared bus runtime is deployed on the same release line before downstreams rely on the richer passport fields operationally.
-   - This is already true for `v0.2.0`.
+Release verification uses the published artifact, not GitHub Actions:
 
-Migration nuance:
+Run the fail-closed verifier. It requires the remote tag to match the local
+validated commit, waits for no missing artifact, checks the published manifest,
+extracts the binary from a disposable container, and requires its embedded Go
+VCS revision and module version to match the tag:
 
-- older bus releases tolerate extra registration fields but do not persist/echo them reliably
-- that is compatibility behavior, not the clean steady state
-- the clean steady state begins once the shared runtime is on `v0.2.0+`
+```bash
+./deploy/verify-release.sh v0.4.0
+```
+
+The command exits nonzero if any tag, manifest, revision, clean-build, module
+version, or digest assertion fails. Record its tag, commit, image digest, and
+clean-build result with the local gate result in the
+   release handoff before any deployment consumes the image.
+
+Deployment is a separate step with its own acceptance and rollback checks.
+Publishing or verifying `v0.4.0` does not by itself mean either authority was
+upgraded.
 
 ## Downstream Follow-On
 
-With `v0.2.0` published and the shared bus runtime deployed on that line:
+After a release is published and each authority is separately accepted on that
+line:
 
 1. `ucla-tdg/ucla-tdg-email-triage`
-   - pin `github.com/joelkehle/pinakes` to `v0.2.0+`
+   - pin `github.com/joelkehle/pinakes` to the accepted compatible release
    - keep using `RegisterAgentWithPassport(...)`
 2. `ucla-tdg/ucla-tdg-ip-agents`
-   - pin `github.com/joelkehle/pinakes` to `v0.2.0+`
+   - pin `github.com/joelkehle/pinakes` to the accepted compatible release
    - remove the local/vendored passport client workaround
 3. Continue Phase 5 with capability docs in both repos.
 
-## Out Of Scope
-
-- rollback automation
-- downstream capability-doc authoring details
-- `jk/jk-email-agents` manager adoption
+Older buses may tolerate extra registration fields without reliably persisting
+or returning them; that compatibility behavior is not the clean passport
+steady state.
