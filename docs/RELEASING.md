@@ -104,12 +104,33 @@ Release verification uses the published artifact, not GitHub Actions:
    docker manifest inspect ghcr.io/joelkehle/pinakes:v0.4.0
    ```
 
-3. Pull and inspect the tagged image. Confirm its recorded source revision, when
-   present, matches the validated release commit:
+3. Pull the tagged image, extract its binary from a disposable container, and
+   require the embedded Go VCS revision to match the validated release commit.
+   The verification fails if the revision is absent, mismatched, or marked
+   modified:
 
    ```bash
+   release_commit="$(git rev-list -n 1 v0.4.0)"
+   artifact_dir="$(mktemp -d)"
    docker pull ghcr.io/joelkehle/pinakes:v0.4.0
-   docker image inspect ghcr.io/joelkehle/pinakes:v0.4.0
+   docker run --rm --entrypoint /bin/sh \
+     -v "$artifact_dir:/out" \
+     ghcr.io/joelkehle/pinakes:v0.4.0 \
+     -c 'cp /usr/local/bin/pinakes /out/pinakes'
+   artifact_revision="$(
+     go version -m "$artifact_dir/pinakes" |
+       awk -F= '$1 ~ /vcs.revision$/ {print $2}'
+   )"
+   artifact_modified="$(
+     go version -m "$artifact_dir/pinakes" |
+       awk -F= '$1 ~ /vcs.modified$/ {print $2}'
+   )"
+   test -n "$artifact_revision"
+   test "$artifact_revision" = "$release_commit"
+   test "$artifact_modified" = false
+   docker image inspect ghcr.io/joelkehle/pinakes:v0.4.0 \
+     --format '{{index .RepoDigests 0}}'
+   trash "$artifact_dir"
    ```
 
 4. Record tag, image digest, source revision, and local gate result in the

@@ -19,6 +19,12 @@ The checked-in `.env.ucla` and `.env.jk` files are non-secret deployment
 templates containing verified topology and runtime values only. Never add
 tokens, passwords, agent secrets, or other credentials to them.
 
+The v0.4.0 compatibility rollout also keeps namespace classification explicit
+per authority: JK uses `compat` / `personal`; UCLA uses `compat` / `ucla`.
+The Compose file requires both values so a JK deployment cannot silently
+inherit the server's UCLA compatibility default. Shared grants remain empty
+unless a separately approved identity is named.
+
 ## Phase 1: Read-Only Host Inventory
 
 Use Docker Compose v2:
@@ -83,6 +89,16 @@ Validate interpolation before touching the old bus:
 ```bash
 docker compose --env-file .env.ucla -p pinakes-ucla config --quiet
 docker compose --env-file .env.jk -p pinakes-jk config --quiet
+```
+
+Inspect the rendered configurations and require the intended pair before
+deployment:
+
+```bash
+docker compose --env-file .env.ucla -p pinakes-ucla config |
+  grep -E 'BUS_NAMESPACE_MODE: compat|BUS_LEGACY_SCOPE: ucla'
+docker compose --env-file .env.jk -p pinakes-jk config |
+  grep -E 'BUS_NAMESPACE_MODE: compat|BUS_LEGACY_SCOPE: personal'
 ```
 
 The allowlist source of truth must be mounted as a read-only directory, not as
