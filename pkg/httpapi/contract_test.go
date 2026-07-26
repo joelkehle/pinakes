@@ -715,6 +715,10 @@ func TestObserveSSECursorResume(t *testing.T) {
 		t.Fatalf("open observe: %v", err)
 	}
 	defer respObserve.Body.Close()
+	observeEpoch := respObserve.Header.Get("X-Pinakes-Observe-Epoch")
+	if observeEpoch == "" {
+		t.Fatalf("observe response missing process epoch")
+	}
 
 	sendReq1 := map[string]any{"to": "ucla.b", "from": "ucla.a", "request_id": "rid-sse-1", "type": "request", "body": "one"}
 	blob1, _ := json.Marshal(sendReq1)
@@ -752,6 +756,9 @@ func TestObserveSSECursorResume(t *testing.T) {
 		t.Fatalf("open resumed observe: %v", err)
 	}
 	defer respResume.Body.Close()
+	if got := respResume.Header.Get("X-Pinakes-Observe-Epoch"); got != observeEpoch {
+		t.Fatalf("same-process observe epoch changed: got=%q want=%q", got, observeEpoch)
+	}
 
 	var resumed sseEvent
 	secondDeadline := time.Now().Add(6 * time.Second)

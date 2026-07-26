@@ -764,6 +764,9 @@ func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	if provider, ok := s.store.(bus.ObserveEpochProvider); ok {
+		w.Header().Set("X-Pinakes-Observe-Epoch", provider.ObserveEpoch())
+	}
 	w.WriteHeader(http.StatusOK)
 
 	cursor := parseObserveCursor(r)

@@ -3,18 +3,18 @@ summary: "Decision draft for durable at-least-once direct-message delivery, dura
 read_when:
   - Planning or reviewing Pinakes issue #5.
   - Changing SQLite delivery, inbox cursor, idempotency, push retry, restart, restore, or observer-event behavior.
-status: decision-draft
+status: implementation
 ---
 
-# BUSFT Direct-Message Durability Contract Draft
+# BUSFT Direct-Message Durability Contract
 
 - Issue: [#5](https://github.com/joelkehle/pinakes/issues/5)
-- Status: Decision draft; no implementation authorized
+- Status: Accepted; implementation in review
 - Prepared: 2026-07-25
 - Maintainer: Joel Kehle
 - Executor: Unassigned
 
-## Proposed decision
+## Decision
 
 Pinakes should provide durable, at-least-once delivery for direct messages and
 durable duplicate suppression for accepted sends. Observer/SSE events should
@@ -218,9 +218,9 @@ No test may require a consumer to perform a real external write.
 
 ## Decision checklist
 
-- [ ] Approve durable delivery for all three direct-message types.
-- [ ] Approve `(from, to, request_id)` as the durable duplicate key.
-- [ ] Approve transport receipt semantics for pull, push, and application ack.
-- [ ] Approve transient observer events with restart-visible epoch handling.
-- [ ] Choose the supported idempotency window and transport-deadline defaults
-      during implementation planning.
+- [x] Durable delivery for all three direct-message types.
+- [x] `(from, to, request_id)` as the durable duplicate key.
+- [x] Transport receipt semantics for pull, push, and application ack.
+- [x] Transient observer events with restart-visible epoch handling.
+- [x] Preserve the existing 24-hour idempotency window and 10-minute default
+      message transport deadline.

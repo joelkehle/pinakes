@@ -182,6 +182,24 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if waitingMsg.TTLExpiresAt.IsZero() {
 		t.Fatalf("waiting message lost TTLExpiresAt in migration")
 	}
+	retry, duplicate, err := ss.SendMessage(SendMessageInput{
+		To:             "ucla.b",
+		From:           "ucla.a",
+		ConversationID: done.ConversationID,
+		RequestID:      "rid-migrate-waiting",
+		Type:           MessageTypeRequest,
+		Body:           "leave me waiting",
+	})
+	if err != nil || !duplicate || retry.MessageID != waiting.MessageID {
+		t.Fatalf("duplicate receipt lost in migration: retry=%+v duplicate=%v err=%v", retry, duplicate, err)
+	}
+	inbox, next, err := ss.PollInbox(PollInboxInput{AgentID: "ucla.b"})
+	if err != nil {
+		t.Fatalf("poll migrated inbox: %v", err)
+	}
+	if len(inbox) != 2 || next != 2 {
+		t.Fatalf("pending deliveries lost in migration: events=%d next=%d", len(inbox), next)
+	}
 
 	// Ordering must survive via the conversation_messages positions.
 	_, msgs, _, err := ss.ListConversationMessages(ListConversationMessagesInput{

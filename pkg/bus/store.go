@@ -2,6 +2,8 @@ package bus
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -95,8 +97,28 @@ type idempotencyEntry struct {
 
 // pushJob is one push-callback delivery handed to the worker pool.
 type pushJob struct {
-	url     string
-	payload map[string]any
+	url       string
+	payload   map[string]any
+	onSuccess func(attempts int)
+	onFailure func(attempts int, failure string)
+}
+
+// sendAcceptance is the complete transport record for one proposed send.
+// Durable backends commit it before the in-memory projection, observer event,
+// or push callback becomes visible.
+type sendAcceptance struct {
+	message            Message
+	conversation       Conversation
+	conversationPos    int
+	nextConversationID int64
+	nextMessageID      int64
+	idempotencyKey     string
+	idempotency        idempotencyEntry
+	inboxEvent         *InboxEvent
+	pushURL            string
+	pushPayload        map[string]any
+	pushSuccess        func(attempts int)
+	pushFailure        func(attempts int, failure string)
 }
 
 type Store struct {
@@ -118,6 +140,7 @@ type Store struct {
 	inboxBytes           map[string]int
 	observeEvents        []ObserveEvent
 	observeBytes         int
+	observeEpoch         string
 	idempotency          map[string]idempotencyEntry
 
 	lastSweepAt time.Time
@@ -264,6 +287,7 @@ func NewStore(cfg Config) *Store {
 		inboxBase:            map[string]int{},
 		inboxBytes:           map[string]int{},
 		observeEvents:        []ObserveEvent{},
+		observeEpoch:         newObserveEpoch(),
 		idempotency:          map[string]idempotencyEntry{},
 		inboxNotify:          map[string]chan struct{}{},
 		observeNotify:        make(chan struct{}),
@@ -284,12 +308,24 @@ func NewStore(cfg Config) *Store {
 	for i := 0; i < cfg.PushWorkers; i++ {
 		go func() {
 			for job := range s.pushQueue {
-				s.sendPushCallback(job.url, job.payload)
+				s.sendPushCallback(job)
 			}
 		}()
 	}
 
 	return s
+}
+
+func newObserveEpoch() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func (s *Store) ObserveEpoch() string {
+	return s.observeEpoch
 }
 
 func (s *Store) now() time.Time {
@@ -561,35 +597,51 @@ func (s *Store) trimObserveLocked() {
 // inside their critical section), which is why the drop path increments
 // pushFailures directly instead of re-locking.
 func (s *Store) enqueuePushLocked(url string, payload map[string]any) {
+	s.enqueuePushJobLocked(pushJob{url: url, payload: payload})
+}
+
+func (s *Store) enqueuePushJobLocked(job pushJob) {
 	select {
-	case s.pushQueue <- pushJob{url: url, payload: payload}:
+	case s.pushQueue <- job:
 	default:
-		s.logger.Printf("WARN push queue full, dropping delivery url=%s", url)
+		s.logger.Printf("WARN push queue full, delaying delivery url=%s", job.url)
 		s.pushFailures++
+		if job.onFailure != nil {
+			go job.onFailure(0, "push queue full")
+		}
 	}
 }
 
-func (s *Store) sendPushCallback(url string, payload map[string]any) {
-	blob, err := json.Marshal(payload)
+func (s *Store) sendPushCallback(job pushJob) {
+	blob, err := json.Marshal(job.payload)
 	if err != nil {
 		s.logger.Printf("push delivery marshal failed: %v", err)
+		if job.onFailure != nil {
+			job.onFailure(0, "marshal callback payload")
+		}
 		return
 	}
 	backoff := s.cfg.PushBaseBackoff
 	for attempt := 1; attempt <= s.cfg.PushMaxAttempts; attempt++ {
-		req, reqErr := http.NewRequest(http.MethodPost, url, bytes.NewReader(blob))
+		req, reqErr := http.NewRequest(http.MethodPost, job.url, bytes.NewReader(blob))
 		if reqErr != nil {
-			s.logger.Printf("push delivery request build failed attempt=%d url=%s err=%v", attempt, url, reqErr)
+			s.logger.Printf("push delivery request build failed attempt=%d url=%s err=%v", attempt, job.url, reqErr)
+			if job.onFailure != nil {
+				job.onFailure(attempt, "build callback request")
+			}
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, doErr := s.httpClient.Do(req)
 		if doErr == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			s.logger.Printf("push delivery success attempt=%d url=%s status=%d", attempt, url, resp.StatusCode)
+			s.logger.Printf("push delivery success attempt=%d url=%s status=%d", attempt, job.url, resp.StatusCode)
 			_ = resp.Body.Close()
 			s.mu.Lock()
 			s.pushSuccesses++
 			s.mu.Unlock()
+			if job.onSuccess != nil {
+				job.onSuccess(attempt)
+			}
 			return
 		}
 		status := 0
@@ -597,17 +649,20 @@ func (s *Store) sendPushCallback(url string, payload map[string]any) {
 			status = resp.StatusCode
 			_ = resp.Body.Close()
 		}
-		s.logger.Printf("push delivery failed attempt=%d url=%s status=%d err=%v", attempt, url, status, doErr)
+		s.logger.Printf("push delivery failed attempt=%d url=%s status=%d err=%v", attempt, job.url, status, doErr)
 		if attempt == s.cfg.PushMaxAttempts {
 			break
 		}
 		time.Sleep(backoff)
 		backoff = backoff * 2
 	}
-	s.logger.Printf("push delivery exhausted retries url=%s attempts=%d", url, s.cfg.PushMaxAttempts)
+	s.logger.Printf("push delivery exhausted retries url=%s attempts=%d", job.url, s.cfg.PushMaxAttempts)
 	s.mu.Lock()
 	s.pushFailures++
 	s.mu.Unlock()
+	if job.onFailure != nil {
+		job.onFailure(s.cfg.PushMaxAttempts, "callback retries exhausted")
+	}
 }
 
 func (s *Store) publishLocked(eventType EventType, data any, conversationID string, agentIDs []string, at time.Time) {
@@ -1042,6 +1097,13 @@ func (s *Store) ListConversations(filter ListConversationsFilter) []Conversation
 }
 
 func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
+	return s.sendMessage(input, nil)
+}
+
+// sendMessage accepts an optional durability barrier. The barrier runs while
+// the store lock is held, after validation and planning but before accepted
+// state, observer traffic, or push callbacks become visible.
+func (s *Store) sendMessage(input SendMessageInput, commit func(*sendAcceptance) error) (*Message, bool, error) {
 	now := s.now()
 	to := strings.TrimSpace(input.To)
 	from := strings.TrimSpace(input.From)
@@ -1072,7 +1134,6 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 	if msgType != MessageTypeRequest && msgType != MessageTypeResponse && msgType != MessageTypeInform {
 		return nil, false, newError(CodeValidation, "type must be request, response, or inform", false, 0)
 	}
-
 	ttl := input.TTLSeconds
 	if ttl <= 0 {
 		ttl = int(s.cfg.DefaultMessageTTL.Seconds())
@@ -1092,7 +1153,6 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 	if err := s.authorizeAgentForName(sender, "publish", to); err != nil {
 		return nil, false, err
 	}
-
 	target, ok := s.agents[to]
 	if !ok {
 		return nil, false, newError(CodeNotFound, "target agent not registered", false, 0)
@@ -1104,21 +1164,55 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 			cp := *existing
 			return &cp, true, nil
 		}
+		return &Message{
+			MessageID: dedup.MessageID,
+			From:      from,
+			To:        to,
+			RequestID: requestID,
+			CreatedAt: dedup.CreatedAt,
+		}, true, nil
 	}
 
-	conv, err := s.ensureConversationLocked(CreateConversationInput{
-		ConversationID: input.ConversationID,
-		Participants:   []string{from, to},
-		ActorAgentID:   from,
-	}, now)
-	if err != nil {
-		return nil, false, err
+	nextConv := s.nextConversationID
+	conversationID := strings.TrimSpace(input.ConversationID)
+	if conversationID == "" {
+		nextConv++
+		conversationID = fmt.Sprintf("c-%06d", nextConv)
+	}
+	var conv Conversation
+	if existing, exists := s.conversations[conversationID]; exists {
+		if err := s.authorizeActorForNames(from, "conversation_reuse", existing.Participants); err != nil {
+			return nil, false, err
+		}
+		if err := s.authorizeActorForNames(from, "conversation_reuse", []string{from, to}); err != nil {
+			return nil, false, err
+		}
+		conv = *existing
+		conv.Participants = append([]string{}, existing.Participants...)
+		mergeConversationParticipantsLocked(&conv, []string{from, to})
+	} else {
+		if err := s.authorizeActorForNames(from, "conversation_create", []string{from, to}); err != nil {
+			return nil, false, err
+		}
+		conv = Conversation{
+			ConversationID: conversationID,
+			Participants:   []string{from, to},
+			Status:         "active",
+			CreatedAt:      now,
+			LastMessageAt:  now,
+		}
 	}
 
-	s.nextMessageID++
-	mid := fmt.Sprintf("m-%06d", s.nextMessageID)
-	m := &Message{
-		MessageID:      mid,
+	if target.Status == AgentStatusExpired {
+		graceUntil := target.ExpiresAt.Add(s.cfg.GracePeriod)
+		if now.After(graceUntil) {
+			return nil, false, newError(CodeNotFound, "target agent expired beyond grace period", false, 0)
+		}
+	}
+
+	nextMsg := s.nextMessageID + 1
+	m := Message{
+		MessageID:      fmt.Sprintf("m-%06d", nextMsg),
 		Type:           msgType,
 		From:           from,
 		To:             to,
@@ -1132,53 +1226,38 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 		CreatedAt:      now,
 		TTLExpiresAt:   now.Add(time.Duration(ttl) * time.Second),
 	}
-
 	if msgType != MessageTypeRequest {
 		m.State = StateCompleted
 		m.TerminalAt = now
 	}
 
-	pushCallbackURL := ""
-	pushPayload := map[string]any(nil)
-
+	var inboxEvent *InboxEvent
+	pushURL := ""
+	var pushPayload map[string]any
 	if target.Status == AgentStatusExpired {
-		graceUntil := target.ExpiresAt.Add(s.cfg.GracePeriod)
-		if now.After(graceUntil) {
-			return nil, false, newError(CodeNotFound, "target agent expired beyond grace period", false, 0)
-		}
 		m.QueuedForAgent = true
-		m.GraceUntil = graceUntil
-	} else if msgType == MessageTypeRequest {
-		m.State = StateWaitingAck
-		m.DeliveredAt = now
-		if target.Mode == AgentModePush && strings.TrimSpace(target.CallbackURL) != "" {
-			pushCallbackURL = strings.TrimSpace(target.CallbackURL)
-			pushPayload = map[string]any{
-				"message_id":      m.MessageID,
-				"type":            m.Type,
-				"from":            m.From,
-				"conversation_id": m.ConversationID,
-				"body":            m.Body,
-				"meta":            m.Meta,
-				"attachments":     m.Attachments,
-				"created_at":      m.CreatedAt,
-			}
-		}
-		s.appendInboxLocked(to, InboxEvent{
-			MessageID:      m.MessageID,
-			Type:           m.Type,
-			From:           m.From,
-			ConversationID: m.ConversationID,
-			Body:           m.Body,
-			Meta:           m.Meta,
-			Attachments:    append([]Attachment{}, m.Attachments...),
-			CreatedAt:      m.CreatedAt,
-		})
+		m.GraceUntil = target.ExpiresAt.Add(s.cfg.GracePeriod)
 	} else {
+		if msgType == MessageTypeRequest {
+			m.State = StateWaitingAck
+			m.DeliveredAt = now
+		}
+		evt := InboxEvent{
+			MessageID:      m.MessageID,
+			Type:           m.Type,
+			From:           m.From,
+			ConversationID: m.ConversationID,
+			Body:           m.Body,
+			Meta:           m.Meta,
+			Attachments:    append([]Attachment{}, m.Attachments...),
+			CreatedAt:      m.CreatedAt,
+		}
+		inboxEvent = &evt
 		if target.Mode == AgentModePush && strings.TrimSpace(target.CallbackURL) != "" {
-			pushCallbackURL = strings.TrimSpace(target.CallbackURL)
+			pushURL = strings.TrimSpace(target.CallbackURL)
 			pushPayload = map[string]any{
 				"message_id":      m.MessageID,
+				"request_id":      m.RequestID,
 				"type":            m.Type,
 				"from":            m.From,
 				"conversation_id": m.ConversationID,
@@ -1188,26 +1267,43 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 				"created_at":      m.CreatedAt,
 			}
 		}
-		s.appendInboxLocked(to, InboxEvent{
-			MessageID:      m.MessageID,
-			Type:           m.Type,
-			From:           m.From,
-			ConversationID: m.ConversationID,
-			Body:           m.Body,
-			Meta:           m.Meta,
-			Attachments:    append([]Attachment{}, m.Attachments...),
-			CreatedAt:      m.CreatedAt,
-		})
 	}
 
-	s.messages[mid] = m
-	s.conversationMessages[conv.ConversationID] = append(s.conversationMessages[conv.ConversationID], mid)
-	conv.MessageCount = len(s.conversationMessages[conv.ConversationID])
+	position := len(s.conversationMessages[conv.ConversationID])
+	conv.MessageCount = position + 1
 	conv.LastMessageAt = now
 	if conv.Status == "" {
 		conv.Status = "active"
 	}
-	s.idempotency[key] = idempotencyEntry{MessageID: mid, CreatedAt: now}
+	acceptance := &sendAcceptance{
+		message:            m,
+		conversation:       conv,
+		conversationPos:    position,
+		nextConversationID: nextConv,
+		nextMessageID:      nextMsg,
+		idempotencyKey:     key,
+		idempotency:        idempotencyEntry{MessageID: m.MessageID, CreatedAt: now},
+		inboxEvent:         inboxEvent,
+		pushURL:            pushURL,
+		pushPayload:        pushPayload,
+	}
+	if commit != nil {
+		if err := commit(acceptance); err != nil {
+			return nil, false, err
+		}
+	}
+
+	s.nextConversationID = nextConv
+	s.nextMessageID = nextMsg
+	convCopy := conv
+	s.conversations[conv.ConversationID] = &convCopy
+	messageCopy := m
+	s.messages[m.MessageID] = &messageCopy
+	s.conversationMessages[conv.ConversationID] = append(s.conversationMessages[conv.ConversationID], m.MessageID)
+	s.idempotency[key] = acceptance.idempotency
+	if inboxEvent != nil {
+		s.appendInboxLocked(to, *inboxEvent)
+	}
 
 	s.publishLocked(
 		ObserveMessage,
@@ -1224,16 +1320,27 @@ func (s *Store) SendMessage(input SendMessageInput) (*Message, bool, error) {
 		[]string{m.From, m.To},
 		now,
 	)
-
-	if pushCallbackURL != "" && pushPayload != nil {
-		s.enqueuePushLocked(pushCallbackURL, pushPayload)
+	if pushURL != "" && pushPayload != nil {
+		s.enqueuePushJobLocked(pushJob{
+			url:       pushURL,
+			payload:   pushPayload,
+			onSuccess: acceptance.pushSuccess,
+			onFailure: acceptance.pushFailure,
+		})
 	}
 
-	cp := *m
+	cp := messageCopy
 	return &cp, false, nil
 }
 
 func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
+	return s.pollInbox(input, nil)
+}
+
+// pollInbox accepts an optional durability barrier for cursor advancement.
+// The barrier commits receipt before the acknowledged inbox prefix is removed
+// or the next response is returned.
+func (s *Store) pollInbox(input PollInboxInput, advance func(agentID string, cursor int) error) ([]InboxEvent, int, error) {
 	agentID := strings.TrimSpace(input.AgentID)
 	if agentID == "" {
 		return nil, 0, newError(CodeValidation, "agent_id is required", false, 0)
@@ -1280,6 +1387,12 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 		// cursor C proves the agent received everything below C. Reclaim
 		// those events instead of holding them until a cap evicts them.
 		if cursor > base {
+			if advance != nil {
+				if err := advance(agentID, cursor); err != nil {
+					s.mu.Unlock()
+					return nil, 0, err
+				}
+			}
 			s.dropInboxPrefixLocked(agentID, cursor-base)
 			events = s.inboxes[agentID]
 			base = cursor
@@ -1315,6 +1428,10 @@ func (s *Store) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
 }
 
 func (s *Store) Ack(input AckInput) error {
+	return s.ack(input, nil)
+}
+
+func (s *Store) ack(input AckInput, commit func(*Message) error) error {
 	now := s.now()
 	agentID := strings.TrimSpace(input.AgentID)
 	messageID := strings.TrimSpace(input.MessageID)
@@ -1344,6 +1461,24 @@ func (s *Store) Ack(input AckInput) error {
 		return nil
 	}
 
+	from := m.State
+	next := *m
+	next.QueuedForAgent = false
+	if next.DeliveredAt.IsZero() {
+		next.DeliveredAt = now
+	}
+	if status == "rejected" {
+		next.State = StateRejected
+		next.TerminalAt = now
+	} else {
+		next.State = StateExecuting
+	}
+	if commit != nil {
+		if err := commit(&next); err != nil {
+			return err
+		}
+	}
+	*m = next
 	s.publishLocked(
 		ObserveAck,
 		map[string]any{
@@ -1356,14 +1491,6 @@ func (s *Store) Ack(input AckInput) error {
 		[]string{m.From, m.To},
 		now,
 	)
-
-	from := m.State
-	if status == "rejected" {
-		m.State = StateRejected
-		m.TerminalAt = now
-	} else {
-		m.State = StateExecuting
-	}
 	s.publishLocked(
 		ObserveStateChange,
 		map[string]any{

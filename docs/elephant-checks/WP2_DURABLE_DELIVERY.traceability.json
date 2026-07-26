@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "receipt": "docs/elephant-checks/WP2_DURABLE_DELIVERY.md",
+  "receipt_sha256": "ba56dfd60925b27a5bbc18f37ea7fe787dd162ad61ea167de9d9b3d31044be38",
+  "overall_status": "pass",
+  "conditions": [
+    {
+      "id": "EC-1",
+      "status": "pass",
+      "code": ["pkg/bus/store.go", "pkg/bus/sqlite_delivery.go"],
+      "tests": ["pkg/bus/sqlite_atomic_test.go"],
+      "proof": ["pkg/bus/sqlite_atomic_test.go"]
+    },
+    {
+      "id": "EC-2",
+      "status": "pass",
+      "code": ["pkg/bus/sqlite_delivery.go"],
+      "tests": ["pkg/bus/sqlite_delivery_test.go"],
+      "proof": ["pkg/bus/sqlite_delivery_test.go"]
+    },
+    {
+      "id": "EC-3",
+      "status": "pass",
+      "code": ["pkg/bus/store.go", "pkg/bus/sqlite_delivery.go"],
+      "tests": ["pkg/bus/sqlite_delivery_test.go"],
+      "proof": ["pkg/bus/sqlite_delivery_test.go"]
+    },
+    {
+      "id": "EC-4",
+      "status": "pass",
+      "code": ["pkg/bus/store.go", "pkg/bus/sqlite_delivery.go"],
+      "tests": ["pkg/bus/sqlite_delivery_test.go"],
+      "proof": ["pkg/bus/sqlite_delivery_test.go"]
+    },
+    {
+      "id": "EC-5",
+      "status": "pass",
+      "code": ["pkg/bus/store.go", "pkg/httpapi/server.go"],
+      "tests": ["pkg/bus/persistent_test.go", "pkg/httpapi/contract_test.go"],
+      "proof": ["pkg/httpapi/contract_test.go"]
+    },
+    {
+      "id": "EC-6",
+      "status": "pass",
+      "code": ["pkg/bus/sqlite.go", "pkg/bus/sqlite_delivery.go"],
+      "tests": ["pkg/bus/sqlite_delivery_test.go"],
+      "proof": ["pkg/bus/sqlite_delivery_test.go"]
+    },
+    {
+      "id": "EC-7",
+      "status": "pass",
+      "code": ["pkg/bus/sqlite.go"],
+      "tests": ["pkg/bus/sqlite_delivery_test.go"],
+      "proof": ["docs/elephant-checks/WP2_DURABLE_DELIVERY.md"]
+    },
+    {
+      "id": "EC-8",
+      "status": "pass",
+      "code": ["pkg/bus/migrate.go"],
+      "tests": ["pkg/bus/migrate_test.go"],
+      "proof": ["pkg/bus/migrate_test.go"]
+    }
+  ]
+}
