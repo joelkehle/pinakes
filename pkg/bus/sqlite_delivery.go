@@ -11,6 +11,162 @@ type claimedPush struct {
 	callbackURL string
 }
 
+const durableDeliveryBackfill = "durable-delivery-v1"
+
+// backfillLegacyDeliveryState upgrades pre-durability SQLite databases exactly
+// once. Old SQLite retained messages but not inboxes or idempotency, so the
+// safest reconstructable boundary is: unexpired unacknowledged requests plus
+// unexpired response/inform messages. Executing and terminal requests are never
+// redelivered.
+func (s *SQLiteStore) backfillLegacyDeliveryState() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var applied int
+	if err := tx.Get(&applied, `SELECT COUNT(*) FROM schema_migrations WHERE key = ?`,
+		durableDeliveryBackfill); err != nil {
+		return err
+	}
+	if applied > 0 {
+		_ = tx.Rollback()
+		committed = true
+		return nil
+	}
+
+	now := s.inner.now()
+	rows, err := tx.Query(`SELECT message_id, to_agent, created_at, ttl_expires_at
+		FROM messages
+		WHERE to_agent <> ''
+		  AND (
+		    (type = 'request' AND state IN ('pending', 'waiting'))
+		    OR type IN ('response', 'inform')
+		  )
+		  AND message_id NOT IN (SELECT message_id FROM deliveries)
+		ORDER BY created_at, message_id`)
+	if err != nil {
+		return err
+	}
+	type legacyDelivery struct {
+		messageID string
+		target    string
+		createdAt string
+		expiresAt string
+	}
+	var pending []legacyDelivery
+	for rows.Next() {
+		var item legacyDelivery
+		if err := rows.Scan(&item.messageID, &item.target, &item.createdAt, &item.expiresAt); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range pending {
+		createdAt, err := parseSQLiteTime(item.createdAt)
+		if err != nil {
+			return err
+		}
+		expiresAt := createdAt.Add(s.inner.cfg.DefaultMessageTTL)
+		if item.expiresAt != "" {
+			expiresAt, err = parseSQLiteTime(item.expiresAt)
+			if err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(`UPDATE messages SET ttl_expires_at = ?
+			WHERE message_id = ?`, timeToString(expiresAt), item.messageID); err != nil {
+			return err
+		}
+		if !expiresAt.After(now) {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO delivery_cursors
+			(target_agent_id, next_seq, acknowledged_cursor) VALUES (?, 0, 0)
+			ON CONFLICT(target_agent_id) DO NOTHING`, item.target); err != nil {
+			return err
+		}
+		var seq int
+		if err := tx.Get(&seq, `SELECT next_seq FROM delivery_cursors
+			WHERE target_agent_id = ?`, item.target); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO deliveries
+			(target_agent_id, delivery_seq, message_id, status, next_attempt_at,
+			 attempt_count, received_at, expires_at, last_error)
+			VALUES (?, ?, ?, 'pending', ?, 0, '', ?, '')`,
+			item.target, seq, item.messageID, item.createdAt, timeToString(expiresAt)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE delivery_cursors SET next_seq = ?
+			WHERE target_agent_id = ?`, seq+1, item.target); err != nil {
+			return err
+		}
+	}
+
+	idempotencyCutoff := timeToString(now.Add(-s.inner.cfg.IdempotencyWindow))
+	idempotencyRows, err := tx.Query(`SELECT from_agent, to_agent, request_id,
+		message_id, created_at FROM messages
+		WHERE from_agent <> '' AND to_agent <> '' AND request_id <> ''
+		  AND created_at >= ?
+		ORDER BY created_at, message_id`, idempotencyCutoff)
+	if err != nil {
+		return err
+	}
+	type legacyReceipt struct {
+		from, to, requestID, messageID, acceptedAt string
+	}
+	var receipts []legacyReceipt
+	for idempotencyRows.Next() {
+		var receipt legacyReceipt
+		if err := idempotencyRows.Scan(&receipt.from, &receipt.to, &receipt.requestID,
+			&receipt.messageID, &receipt.acceptedAt); err != nil {
+			_ = idempotencyRows.Close()
+			return err
+		}
+		receipts = append(receipts, receipt)
+	}
+	if err := idempotencyRows.Close(); err != nil {
+		return err
+	}
+	for _, receipt := range receipts {
+		acceptedAt, err := parseSQLiteTime(receipt.acceptedAt)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO idempotency
+			(from_agent, to_agent, request_id, message_id, accepted_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(from_agent, to_agent, request_id) DO NOTHING`,
+			receipt.from, receipt.to, receipt.requestID, receipt.messageID,
+			receipt.acceptedAt,
+			timeToString(acceptedAt.Add(s.inner.cfg.IdempotencyWindow))); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (key, applied_at)
+		VALUES (?, ?)`, durableDeliveryBackfill, timeToString(now)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
 // persistAcceptance is the SQLite durability barrier used by Store.sendMessage.
 // The in-memory projection and external callbacks are published only after this
 // transaction commits.
@@ -109,11 +265,12 @@ func (s *SQLiteStore) persistAcceptance(a *sendAcceptance) error {
 func (s *SQLiteStore) recordPushSuccess(messageID string, attempts int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.Exec(`UPDATE deliveries
+	_, err := s.db.Exec(`UPDATE deliveries
 		SET status = 'received', received_at = ?, attempt_count = attempt_count + ?,
 		    next_attempt_at = '', last_error = ''
 		WHERE message_id = ? AND status = 'attempting'`,
 		timeToString(s.inner.now()), attempts, messageID)
+	s.recordDeliveryPersistenceResultLocked(messageID, "success", err)
 }
 
 func (s *SQLiteStore) recordPushFailure(messageID string, attempts int, failure string) {
@@ -124,13 +281,22 @@ func (s *SQLiteStore) recordPushFailure(messageID string, attempts int, failure 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.Exec(`UPDATE deliveries
+	_, err := s.db.Exec(`UPDATE deliveries
 		SET status = CASE WHEN expires_at <= ? THEN 'failed' ELSE 'pending' END,
 		    next_attempt_at = CASE WHEN expires_at <= ? THEN '' ELSE ? END,
 		    attempt_count = attempt_count + ?, last_error = ?
 		WHERE message_id = ? AND status = 'attempting'`,
 		timeToString(now), timeToString(now), timeToString(nextAttempt),
 		attempts, failure, messageID)
+	s.recordDeliveryPersistenceResultLocked(messageID, "failure", err)
+}
+
+func (s *SQLiteStore) recordDeliveryPersistenceResultLocked(messageID, outcome string, err error) {
+	s.deliveryPersistErr = err
+	if err != nil {
+		s.inner.logger.Printf("ERROR persist push receipt message_id=%s outcome=%s err=%v",
+			messageID, outcome, err)
+	}
 }
 
 func pushCycleBackoff(cfg Config, attempts int) time.Duration {
@@ -242,7 +408,6 @@ func (s *SQLiteStore) enqueueClaimedPush(claimed claimedPush) {
 	}
 	messageID := m.MessageID
 	s.inner.mu.Lock()
-	defer s.inner.mu.Unlock()
 	if existing := s.inner.messages[messageID]; existing != nil {
 		existing.QueuedForAgent = false
 		if existing.Type == MessageTypeRequest && existing.State == StatePending {
@@ -252,7 +417,7 @@ func (s *SQLiteStore) enqueueClaimedPush(claimed claimedPush) {
 			existing.DeliveredAt = m.DeliveredAt
 		}
 	}
-	s.inner.enqueuePushJobLocked(pushJob{
+	job := pushJob{
 		url:     claimed.callbackURL,
 		payload: payload,
 		onSuccess: func(attempts int) {
@@ -261,7 +426,12 @@ func (s *SQLiteStore) enqueueClaimedPush(claimed claimedPush) {
 		onFailure: func(attempts int, failure string) {
 			s.recordPushFailure(messageID, attempts, failure)
 		},
-	})
+	}
+	failure := s.inner.enqueuePushJobLocked(job)
+	s.inner.mu.Unlock()
+	if failure != "" {
+		job.onFailure(0, failure)
+	}
 }
 
 func (s *SQLiteStore) deliveryCounts() (pending, failed int) {

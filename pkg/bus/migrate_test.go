@@ -105,6 +105,22 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send waiting message: %v", err)
 	}
+	executing, _, err := ps.SendMessage(SendMessageInput{
+		To:             "ucla.b",
+		From:           "ucla.a",
+		ConversationID: done.ConversationID,
+		RequestID:      "rid-migrate-executing",
+		Type:           MessageTypeRequest,
+		Body:           "already accepted",
+	})
+	if err != nil {
+		t.Fatalf("send accepted message: %v", err)
+	}
+	if err := ps.Ack(AckInput{
+		AgentID: "ucla.b", MessageID: executing.MessageID, Status: "accepted",
+	}); err != nil {
+		t.Fatalf("accept message: %v", err)
+	}
 
 	migrated, err := MigrateJSONStateToSQLite(statePath, dbPath, cfg)
 	if err != nil {
@@ -158,7 +174,7 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if len(convs) != 1 {
 		t.Fatalf("expected 1 conversation after migration, got %d", len(convs))
 	}
-	if convs[0].ConversationID != done.ConversationID || convs[0].MessageCount != 2 {
+	if convs[0].ConversationID != done.ConversationID || convs[0].MessageCount != 3 {
 		t.Fatalf("conversation mismatch after migration: %+v", convs[0])
 	}
 
@@ -182,6 +198,10 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if waitingMsg.TTLExpiresAt.IsZero() {
 		t.Fatalf("waiting message lost TTLExpiresAt in migration")
 	}
+	executingMsg, ok := ss.GetMessageForTest(executing.MessageID)
+	if !ok || executingMsg.State != StateExecuting {
+		t.Fatalf("accepted message lifecycle lost in migration: %+v found=%v", executingMsg, ok)
+	}
 	retry, duplicate, err := ss.SendMessage(SendMessageInput{
 		To:             "ucla.b",
 		From:           "ucla.a",
@@ -197,8 +217,8 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("poll migrated inbox: %v", err)
 	}
-	if len(inbox) != 2 || next != 2 {
-		t.Fatalf("pending deliveries lost in migration: events=%d next=%d", len(inbox), next)
+	if len(inbox) != 1 || inbox[0].MessageID != waiting.MessageID || next != 1 {
+		t.Fatalf("migration redelivered acknowledged request: events=%#v next=%d", inbox, next)
 	}
 
 	// Ordering must survive via the conversation_messages positions.
@@ -210,7 +230,8 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list conversation messages after migration: %v", err)
 	}
-	if len(msgs) != 2 || msgs[0].MessageID != done.MessageID || msgs[1].MessageID != waiting.MessageID {
+	if len(msgs) != 3 || msgs[0].MessageID != done.MessageID ||
+		msgs[1].MessageID != waiting.MessageID || msgs[2].MessageID != executing.MessageID {
 		t.Fatalf("conversation ordering lost in migration: %+v", msgs)
 	}
 
@@ -225,7 +246,8 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send after migration: %v", err)
 	}
-	if fresh.MessageID == done.MessageID || fresh.MessageID == waiting.MessageID {
+	if fresh.MessageID == done.MessageID || fresh.MessageID == waiting.MessageID ||
+		fresh.MessageID == executing.MessageID {
 		t.Fatalf("message id counter reset by migration: %s", fresh.MessageID)
 	}
 	if fresh.ConversationID == done.ConversationID {

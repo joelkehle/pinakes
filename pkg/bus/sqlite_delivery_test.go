@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 func registerDeliveryPair(t *testing.T, s *SQLiteStore) {
@@ -19,6 +21,127 @@ func registerDeliveryPair(t *testing.T, s *SQLiteStore) {
 		}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
+	}
+}
+
+func TestSQLiteLegacyUpgradeBackfillsOnlyUnreceivedDeliveries(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-delivery.db")
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	cfg := Config{Clock: func() time.Time { return now }}
+
+	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open legacy fixture: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(sqliteSchema); err != nil {
+		t.Fatalf("create legacy fixture schema: %v", err)
+	}
+	for _, id := range []string{"ucla.sender", "ucla.receiver"} {
+		if err := saveAgentTo(db, &Agent{
+			AgentID: id, Mode: AgentModePull, Status: AgentStatusActive,
+			RegisteredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+			TTLSeconds: 3600,
+		}); err != nil {
+			t.Fatalf("save legacy agent %s: %v", id, err)
+		}
+	}
+	conversation := &Conversation{
+		ConversationID: "c-legacy", Participants: []string{"ucla.sender", "ucla.receiver"},
+		Status: "active", MessageCount: 4,
+		CreatedAt: now.Add(-4 * time.Minute), LastMessageAt: now.Add(-time.Minute),
+	}
+	if err := saveConversationTo(db, conversation); err != nil {
+		t.Fatalf("save legacy conversation: %v", err)
+	}
+	messages := []Message{
+		{
+			MessageID: "m-pending", Type: MessageTypeRequest,
+			From: "ucla.sender", To: "ucla.receiver", ConversationID: "c-legacy",
+			RequestID: "legacy-pending", Body: "still waiting", State: StateWaitingAck,
+			CreatedAt: now.Add(-4 * time.Minute),
+			// A pre-TTL row exercises derivation from the configured default.
+		},
+		{
+			MessageID: "m-executing", Type: MessageTypeRequest,
+			From: "ucla.sender", To: "ucla.receiver", ConversationID: "c-legacy",
+			RequestID: "legacy-executing", Body: "already accepted", State: StateExecuting,
+			CreatedAt: now.Add(-3 * time.Minute), TTLExpiresAt: now.Add(7 * time.Minute),
+		},
+		{
+			MessageID: "m-completed", Type: MessageTypeRequest,
+			From: "ucla.sender", To: "ucla.receiver", ConversationID: "c-legacy",
+			RequestID: "legacy-completed", Body: "already complete", State: StateCompleted,
+			CreatedAt: now.Add(-2 * time.Minute), TerminalAt: now.Add(-time.Minute),
+			TTLExpiresAt: now.Add(8 * time.Minute),
+		},
+		{
+			MessageID: "m-inform", Type: MessageTypeInform,
+			From: "ucla.sender", To: "ucla.receiver", ConversationID: "c-legacy",
+			RequestID: "legacy-inform", Body: "unreceived information", State: StateCompleted,
+			CreatedAt: now.Add(-time.Minute), TerminalAt: now.Add(-time.Minute),
+			TTLExpiresAt: now.Add(9 * time.Minute),
+		},
+	}
+	for position := range messages {
+		if err := saveMessageTo(db, &messages[position]); err != nil {
+			t.Fatalf("save legacy message %s: %v", messages[position].MessageID, err)
+		}
+		if err := saveConversationMessageTo(db, "c-legacy", messages[position].MessageID, position); err != nil {
+			t.Fatalf("save legacy conversation link: %v", err)
+		}
+	}
+	if err := saveCountersTo(db, 1, 4); err != nil {
+		t.Fatalf("save legacy counters: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy fixture: %v", err)
+	}
+
+	s, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("upgrade legacy store: %v", err)
+	}
+	events, next, err := s.PollInbox(PollInboxInput{AgentID: "ucla.receiver"})
+	if err != nil {
+		t.Fatalf("poll backfilled inbox: %v", err)
+	}
+	if len(events) != 2 || next != 2 ||
+		events[0].MessageID != "m-pending" || events[1].MessageID != "m-inform" {
+		t.Fatalf("backfilled deliveries=%#v next=%d", events, next)
+	}
+	retry, duplicate, err := s.SendMessage(SendMessageInput{
+		From: "ucla.sender", To: "ucla.receiver", RequestID: "legacy-executing",
+		Type: MessageTypeRequest, Body: "already accepted",
+	})
+	if err != nil || !duplicate || retry.MessageID != "m-executing" {
+		t.Fatalf("backfilled duplicate receipt=%+v duplicate=%v err=%v", retry, duplicate, err)
+	}
+	var deliveryRows, markerRows int
+	if err := s.db.Get(&deliveryRows, `SELECT COUNT(*) FROM deliveries`); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if err := s.db.Get(&markerRows, `SELECT COUNT(*) FROM schema_migrations WHERE key = ?`,
+		durableDeliveryBackfill); err != nil {
+		t.Fatalf("count migration marker: %v", err)
+	}
+	if deliveryRows != 2 || markerRows != 1 {
+		t.Fatalf("delivery rows=%d marker rows=%d", deliveryRows, markerRows)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close upgraded store: %v", err)
+	}
+
+	reopened, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("reopen upgraded store: %v", err)
+	}
+	defer reopened.Close()
+	if err := reopened.db.Get(&deliveryRows, `SELECT COUNT(*) FROM deliveries`); err != nil {
+		t.Fatalf("count deliveries after reopen: %v", err)
+	}
+	if deliveryRows != 2 {
+		t.Fatalf("backfill reran after marker: delivery rows=%d", deliveryRows)
 	}
 }
 
@@ -277,6 +400,135 @@ func TestSQLitePushRetrySurvivesRestart(t *testing.T) {
 	time.Sleep(1200 * time.Millisecond)
 	if got := attempts.Load(); got != receivedAttempts {
 		t.Fatalf("durable push receipt replayed callback: attempts=%d want=%d", got, receivedAttempts)
+	}
+}
+
+func TestSQLiteCloseDrainsPushReceiptBeforeClosingDatabase(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var attempts atomic.Int64
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer callback.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "push-drain.db")
+	cfg := Config{
+		Clock: time.Now, PushMaxAttempts: 1,
+		PushShutdownTimeout: 2 * time.Second,
+	}
+	s, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := s.RegisterAgent(RegisterAgentInput{
+		AgentID: "ucla.sender", Mode: AgentModePull, TTLSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("register sender: %v", err)
+	}
+	if _, err := s.RegisterAgent(RegisterAgentInput{
+		AgentID: "ucla.receiver", Mode: AgentModePush,
+		CallbackURL: callback.URL, TTLSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("register receiver: %v", err)
+	}
+	msg, _, err := s.SendMessage(SendMessageInput{
+		From: "ucla.sender", To: "ucla.receiver", RequestID: "push-drain",
+		Type: MessageTypeInform, Body: "persist receipt before close",
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for callback")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("close returned before callback completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-closed; err != nil {
+		t.Fatalf("close after callback receipt: %v", err)
+	}
+
+	reopened, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("reopen after drained close: %v", err)
+	}
+	defer reopened.Close()
+	waitForDeliveryStatus(t, reopened, msg.MessageID, "received", time.Second)
+	time.Sleep(1200 * time.Millisecond)
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("drained callback replayed after restart: attempts=%d", got)
+	}
+}
+
+func TestSQLiteCloseRecoversAttemptingPushAfterShutdownTimeout(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	callback := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+	}))
+	defer callback.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "push-timeout.db")
+	cfg := Config{
+		Clock: time.Now, PushMaxAttempts: 1,
+		PushShutdownTimeout: 50 * time.Millisecond,
+	}
+	s, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := s.RegisterAgent(RegisterAgentInput{
+		AgentID: "ucla.sender", Mode: AgentModePull, TTLSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("register sender: %v", err)
+	}
+	if _, err := s.RegisterAgent(RegisterAgentInput{
+		AgentID: "ucla.receiver", Mode: AgentModePush,
+		CallbackURL: callback.URL, TTLSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("register receiver: %v", err)
+	}
+	msg, _, err := s.SendMessage(SendMessageInput{
+		From: "ucla.sender", To: "ucla.receiver", RequestID: "push-timeout",
+		Type: MessageTypeInform, Body: "recover interrupted callback",
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for callback")
+	}
+	if err := s.Close(); err == nil || !strings.Contains(err.Error(), "push shutdown exceeded") {
+		t.Fatalf("close error=%v, want explicit shutdown timeout", err)
+	}
+	close(release)
+
+	db, err := sqlx.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database after timeout: %v", err)
+	}
+	defer db.Close()
+	var status string
+	if err := db.Get(&status, `SELECT status FROM deliveries WHERE message_id = ?`, msg.MessageID); err != nil {
+		t.Fatalf("read recovered delivery: %v", err)
+	}
+	if status != "pending" {
+		t.Fatalf("delivery status=%q want=pending", status)
 	}
 }
 

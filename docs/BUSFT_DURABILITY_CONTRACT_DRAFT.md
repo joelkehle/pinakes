@@ -123,6 +123,9 @@ A push callback:
   terminal transport failure and metric.
 
 A 2xx callback proves receipt only, not successful business execution.
+During shutdown, Pinakes drains accepted callback work through durable receipt
+persistence. If the shutdown deadline expires, it cancels in-flight callbacks
+and returns their durable delivery rows to pending before SQLite closes.
 
 ### 6. Request lifecycle after restart
 

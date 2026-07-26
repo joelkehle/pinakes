@@ -2,6 +2,7 @@ package bus
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -44,7 +45,10 @@ type Config struct {
 	PushQueueSize int
 	// PushWorkers is the fixed number of goroutines draining the push
 	// queue. Defaults to 4.
-	PushWorkers            int
+	PushWorkers int
+	// PushShutdownTimeout bounds graceful draining of accepted push callback
+	// work before cancellation. Defaults to 15s.
+	PushShutdownTimeout    time.Duration
 	MaxInboxEventsPerAgent int
 	MaxObserveEvents       int
 	// MaxInboxBytesPerAgent bounds the approximate retained payload bytes per
@@ -168,7 +172,11 @@ type Store struct {
 
 	// pushQueue feeds the fixed pool of push workers. Bounded so a burst of
 	// sends to a dead push agent cannot pile up unbounded goroutines.
-	pushQueue chan pushJob
+	pushQueue   chan pushJob
+	pushWG      sync.WaitGroup
+	pushContext context.Context
+	pushCancel  context.CancelFunc
+	pushClosed  bool
 }
 
 func NewStore(cfg Config) *Store {
@@ -204,6 +212,9 @@ func NewStore(cfg Config) *Store {
 	}
 	if cfg.PushWorkers <= 0 {
 		cfg.PushWorkers = 4
+	}
+	if cfg.PushShutdownTimeout <= 0 {
+		cfg.PushShutdownTimeout = 15 * time.Second
 	}
 	if cfg.MaxInboxEventsPerAgent <= 0 {
 		cfg.MaxInboxEventsPerAgent = 10000
@@ -277,6 +288,7 @@ func NewStore(cfg Config) *Store {
 		}
 	}
 
+	pushContext, pushCancel := context.WithCancel(context.Background())
 	s := &Store{
 		cfg:                  cfg,
 		agents:               map[string]*Agent{},
@@ -295,20 +307,22 @@ func NewStore(cfg Config) *Store {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger:    cfg.Logger,
-		pushQueue: make(chan pushJob, cfg.PushQueueSize),
+		logger:      cfg.Logger,
+		pushQueue:   make(chan pushJob, cfg.PushQueueSize),
+		pushContext: pushContext,
+		pushCancel:  pushCancel,
 	}
 	if s.logger == nil {
 		s.logger = log.New(os.Stdout, "pinakes ", log.LstdFlags)
 	}
 
-	// Push workers are daemon goroutines for the life of the process. Store
-	// has no Close, so they are never shut down; that is accepted — they are
-	// a fixed pool, not per-job spawns.
 	for i := 0; i < cfg.PushWorkers; i++ {
 		go func() {
 			for job := range s.pushQueue {
-				s.sendPushCallback(job)
+				func() {
+					defer s.pushWG.Done()
+					s.sendPushCallback(job)
+				}()
 			}
 		}()
 	}
@@ -597,18 +611,26 @@ func (s *Store) trimObserveLocked() {
 // inside their critical section), which is why the drop path increments
 // pushFailures directly instead of re-locking.
 func (s *Store) enqueuePushLocked(url string, payload map[string]any) {
-	s.enqueuePushJobLocked(pushJob{url: url, payload: payload})
+	_ = s.enqueuePushJobLocked(pushJob{url: url, payload: payload})
 }
 
-func (s *Store) enqueuePushJobLocked(job pushJob) {
+// enqueuePushJobLocked returns an explicit scheduling failure so a caller with
+// a durable receipt callback can run it only after releasing s.mu.
+func (s *Store) enqueuePushJobLocked(job pushJob) string {
+	if s.pushClosed {
+		s.logger.Printf("WARN push delivery rejected during shutdown url=%s", job.url)
+		s.pushFailures++
+		return "push delivery interrupted by shutdown"
+	}
+	s.pushWG.Add(1)
 	select {
 	case s.pushQueue <- job:
+		return ""
 	default:
+		s.pushWG.Done()
 		s.logger.Printf("WARN push queue full, delaying delivery url=%s", job.url)
 		s.pushFailures++
-		if job.onFailure != nil {
-			go job.onFailure(0, "push queue full")
-		}
+		return "push queue full"
 	}
 }
 
@@ -623,7 +645,7 @@ func (s *Store) sendPushCallback(job pushJob) {
 	}
 	backoff := s.cfg.PushBaseBackoff
 	for attempt := 1; attempt <= s.cfg.PushMaxAttempts; attempt++ {
-		req, reqErr := http.NewRequest(http.MethodPost, job.url, bytes.NewReader(blob))
+		req, reqErr := http.NewRequestWithContext(s.pushContext, http.MethodPost, job.url, bytes.NewReader(blob))
 		if reqErr != nil {
 			s.logger.Printf("push delivery request build failed attempt=%d url=%s err=%v", attempt, job.url, reqErr)
 			if job.onFailure != nil {
@@ -650,10 +672,25 @@ func (s *Store) sendPushCallback(job pushJob) {
 			_ = resp.Body.Close()
 		}
 		s.logger.Printf("push delivery failed attempt=%d url=%s status=%d err=%v", attempt, job.url, status, doErr)
+		if s.pushContext.Err() != nil {
+			if job.onFailure != nil {
+				job.onFailure(attempt, "push delivery interrupted by shutdown")
+			}
+			return
+		}
 		if attempt == s.cfg.PushMaxAttempts {
 			break
 		}
-		time.Sleep(backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-s.pushContext.Done():
+			timer.Stop()
+			if job.onFailure != nil {
+				job.onFailure(attempt, "push delivery interrupted by shutdown")
+			}
+			return
+		}
 		backoff = backoff * 2
 	}
 	s.logger.Printf("push delivery exhausted retries url=%s attempts=%d", job.url, s.cfg.PushMaxAttempts)
@@ -663,6 +700,41 @@ func (s *Store) sendPushCallback(job pushJob) {
 	if job.onFailure != nil {
 		job.onFailure(s.cfg.PushMaxAttempts, "callback retries exhausted")
 	}
+}
+
+// closePushWorkers prevents new callbacks, drains accepted work, and cancels
+// in-flight HTTP requests only when the graceful deadline is exhausted.
+func (s *Store) closePushWorkers() error {
+	s.mu.Lock()
+	if s.pushClosed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.pushClosed = true
+	s.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.pushWG.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(s.cfg.PushShutdownTimeout)
+	timedOut := false
+	select {
+	case <-done:
+		timer.Stop()
+	case <-timer.C:
+		timedOut = true
+		s.pushCancel()
+		<-done
+	}
+	close(s.pushQueue)
+	s.pushCancel()
+	if timedOut {
+		return fmt.Errorf("push shutdown exceeded %s; in-flight callbacks canceled", s.cfg.PushShutdownTimeout)
+	}
+	return nil
 }
 
 func (s *Store) publishLocked(eventType EventType, data any, conversationID string, agentIDs []string, at time.Time) {
@@ -1140,7 +1212,14 @@ func (s *Store) sendMessage(input SendMessageInput, commit func(*sendAcceptance)
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var enqueueFailure *pushJob
+	var enqueueFailureReason string
+	defer func() {
+		s.mu.Unlock()
+		if enqueueFailure != nil && enqueueFailure.onFailure != nil {
+			enqueueFailure.onFailure(0, enqueueFailureReason)
+		}
+	}()
 	s.sweepLocked(now)
 
 	sender, ok := s.agents[from]
@@ -1321,12 +1400,16 @@ func (s *Store) sendMessage(input SendMessageInput, commit func(*sendAcceptance)
 		now,
 	)
 	if pushURL != "" && pushPayload != nil {
-		s.enqueuePushJobLocked(pushJob{
+		job := pushJob{
 			url:       pushURL,
 			payload:   pushPayload,
 			onSuccess: acceptance.pushSuccess,
 			onFailure: acceptance.pushFailure,
-		})
+		}
+		if failure := s.enqueuePushJobLocked(job); failure != "" {
+			enqueueFailure = &job
+			enqueueFailureReason = failure
+		}
 	}
 
 	cp := messageCopy

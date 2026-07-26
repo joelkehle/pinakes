@@ -3,6 +3,7 @@ package bus
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,8 +25,14 @@ type SQLiteStore struct {
 	mu    sync.Mutex
 
 	// pruneStop terminates the background DB-prune goroutine on Close.
-	pruneStop chan struct{}
-	pruneOnce sync.Once
+	pruneStop    chan struct{}
+	closeOnce    sync.Once
+	closeErr     error
+	backgroundWG sync.WaitGroup
+
+	// deliveryPersistErr makes callback receipt write failures visible to
+	// health checks until a later receipt write or shutdown recovery succeeds.
+	deliveryPersistErr error
 
 	// testHookBeforeCommit, if non-nil, is invoked inside persistAfterSend
 	// and CreateConversation's transaction right before Commit. Returning a
@@ -131,6 +138,11 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 		expires_at TEXT NOT NULL,
 		PRIMARY KEY (from_agent, to_agent, request_id)
 	);
+
+	CREATE TABLE IF NOT EXISTS schema_migrations (
+		key        TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	);
 	`
 
 func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
@@ -160,10 +172,20 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 	}
 
 	inner := NewStore(cfg)
+	storeReady := false
+	defer func() {
+		if !storeReady {
+			_ = inner.closePushWorkers()
+		}
+	}()
 	s := &SQLiteStore{
 		inner:     inner,
 		db:        db,
 		pruneStop: make(chan struct{}),
+	}
+	if err := s.backfillLegacyDeliveryState(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill durable delivery state: %w", err)
 	}
 	if _, err := db.Exec(`UPDATE deliveries SET status = 'pending'
 		WHERE status = 'attempting'`); err != nil {
@@ -183,9 +205,17 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 
-	go s.pruneLoop()
-	go s.deliveryLoop()
+	s.backgroundWG.Add(2)
+	go func() {
+		defer s.backgroundWG.Done()
+		s.pruneLoop()
+	}()
+	go func() {
+		defer s.backgroundWG.Done()
+		s.deliveryLoop()
+	}()
 
+	storeReady = true
 	return s, nil
 }
 
@@ -342,8 +372,24 @@ func ensureMessageColumns(db *sqlx.DB) error {
 }
 
 func (s *SQLiteStore) Close() error {
-	s.pruneOnce.Do(func() { close(s.pruneStop) })
-	return s.db.Close()
+	s.closeOnce.Do(func() {
+		close(s.pruneStop)
+		s.backgroundWG.Wait()
+		pushErr := s.inner.closePushWorkers()
+
+		s.mu.Lock()
+		_, recoveryErr := s.db.Exec(`UPDATE deliveries SET status = 'pending',
+			next_attempt_at = CASE WHEN next_attempt_at = '' THEN ? ELSE next_attempt_at END,
+			last_error = CASE WHEN last_error = '' THEN 'shutdown recovery' ELSE last_error END
+			WHERE status = 'attempting'`, timeToString(s.inner.now()))
+		if recoveryErr == nil {
+			s.deliveryPersistErr = nil
+		}
+		s.mu.Unlock()
+
+		s.closeErr = errors.Join(pushErr, recoveryErr, s.db.Close())
+	})
+	return s.closeErr
 }
 
 // --- load all state from SQLite into the in-memory Store ---
@@ -944,6 +990,14 @@ func (s *SQLiteStore) Health() map[string]any {
 	pending, failed := s.deliveryCounts()
 	out["pending_deliveries"] = pending
 	out["failed_deliveries"] = failed
+	s.mu.Lock()
+	persistErr := s.deliveryPersistErr
+	s.mu.Unlock()
+	if persistErr != nil {
+		out["ok"] = false
+		out["status"] = "degraded"
+		out["delivery_persistence_error"] = true
+	}
 	return out
 }
 

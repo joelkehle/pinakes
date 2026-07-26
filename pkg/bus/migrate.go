@@ -174,15 +174,28 @@ func importStateToSQLite(state persistentState, dbPath string, cfg Config) (migr
 	}
 	for agentID, inbox := range state.Inboxes {
 		base := state.InboxBase[agentID]
-		if _, err := tx.Exec(`INSERT INTO delivery_cursors
-			(target_agent_id, next_seq, acknowledged_cursor) VALUES (?, ?, ?)`,
-			agentID, base+len(inbox), base); err != nil {
-			return counts, fmt.Errorf("import delivery cursor %s: %w", agentID, err)
-		}
-		for offset, event := range inbox {
+		deliverable := make([]InboxEvent, 0, len(inbox))
+		for _, event := range inbox {
 			pm, ok := state.Messages[event.MessageID]
 			if !ok {
 				log.Printf("WARN dropping delivery for unknown message %s during migration", event.MessageID)
+				continue
+			}
+			message := pm.toMessage()
+			if message.Type == MessageTypeRequest &&
+				(message.State == StateExecuting || isTerminal(message.State)) {
+				continue
+			}
+			deliverable = append(deliverable, event)
+		}
+		if _, err := tx.Exec(`INSERT INTO delivery_cursors
+			(target_agent_id, next_seq, acknowledged_cursor) VALUES (?, ?, ?)`,
+			agentID, base+len(deliverable), base); err != nil {
+			return counts, fmt.Errorf("import delivery cursor %s: %w", agentID, err)
+		}
+		for offset, event := range deliverable {
+			pm, ok := state.Messages[event.MessageID]
+			if !ok {
 				continue
 			}
 			message := pm.toMessage()

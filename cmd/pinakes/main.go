@@ -168,6 +168,7 @@ func main() {
 		DefaultRegistrationTTL: 60 * time.Second,
 		PushMaxAttempts:        3,
 		PushBaseBackoff:        500 * time.Millisecond,
+		PushShutdownTimeout:    15 * time.Second,
 		MaxInboxEventsPerAgent: 10000,
 		MaxObserveEvents:       50000,
 		// Retention/byte-budget knobs default inside bus.NewStore; envs

@@ -305,6 +305,9 @@ These values are currently hard-coded in [main.go](/home/joelkehle/Projects/shar
   the worker pool; when full, the durable delivery is delayed and rescheduled
   instead of being deleted or spawning unbounded goroutines.
 - `PushWorkers = 4` — fixed pool of worker goroutines draining the push queue.
+- `PushShutdownTimeout = 15s` — graceful deadline for accepted push callback
+  work to finish and persist its transport receipt before in-flight HTTP
+  requests are canceled and their deliveries are returned to pending.
 - `MaxInboxEventsPerAgent = 10000`
 - `MaxObserveEvents = 50000`
 - `SweepMinInterval = 250ms` — minimum gap between full sweep passes. The bus skips redundant sweeps inside this window so long-poll cycles do not re-walk hundreds of thousands of retained messages on every wake. The first sweep after process start always runs; agent expiry, TTL expiry, and ack-timeout transitions land within one `SweepMinInterval` of their deadline.
@@ -314,7 +317,11 @@ Important current behavior:
 
 - the non-retention tunables are not externally configurable via env vars today
 - extraction should preserve them unless a deliberate compatibility change is called out
-- on SIGINT/SIGTERM the bus stops accepting connections, waits up to 10s for in-flight requests to drain, then exits 0; long-polling and SSE clients should expect dropped connections at shutdown and retry
+- on SIGINT/SIGTERM the bus stops accepting connections, waits up to 10s for
+  in-flight API requests, then closes the store; store close drains accepted
+  push callback work for up to `PushShutdownTimeout`, durably records completed
+  receipts, and returns interrupted attempts to pending before closing SQLite.
+  Long-polling and SSE clients should expect dropped connections and retry.
 
 ## Retention And Memory Reclamation
 
