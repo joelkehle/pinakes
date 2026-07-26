@@ -15,7 +15,7 @@ const durableDeliveryBackfill = "durable-delivery-v1"
 
 const (
 	durableInboxFallbackMaxEvents = 10_000
-	durableInboxFallbackMaxBytes  = 32 << 20
+	durableInboxMaxBatchBytes     = 32 << 20
 )
 
 func deliveryExpiry(message Message) time.Time {
@@ -538,8 +538,8 @@ func (s *SQLiteStore) durableInboxBatchLimits() (int, int) {
 		maxEvents = durableInboxFallbackMaxEvents
 	}
 	maxBytes := s.inner.cfg.MaxInboxBytesPerAgent
-	if maxBytes <= 0 {
-		maxBytes = durableInboxFallbackMaxBytes
+	if maxBytes <= 0 || maxBytes > durableInboxMaxBatchBytes {
+		maxBytes = durableInboxMaxBatchBytes
 	}
 	return maxEvents, maxBytes
 }
@@ -635,6 +635,9 @@ func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]I
 		}
 		item.message = message
 		eventBytes := inboxEventSize(messageInboxEvent(message))
+		// Keep cursor progress possible if a legacy/imported event exceeds the
+		// batch ceiling by itself. Normal HTTP acceptance constrains individual
+		// events through MaxBodyBytes.
 		if len(pending) > 0 && batchBytes+eventBytes > maxBytes {
 			break
 		}

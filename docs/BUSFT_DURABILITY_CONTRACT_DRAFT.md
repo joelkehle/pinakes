@@ -102,9 +102,13 @@ retries.
 Each target has a monotonically increasing delivery sequence. A pull response
 returns a cursor covering the deliveries in that response.
 
-Each response is bounded by configured event-count and byte limits. Rows beyond
-the returned batch remain durable and pending; the returned cursor covers only
-the batch actually returned.
+Each response is bounded by the configured event-count limit and a fixed byte
+safety ceiling, lowered further by any smaller positive projection byte budget.
+Disabling in-memory projection eviction does not disable the response ceiling.
+Rows beyond the returned batch remain durable and pending; the returned cursor
+covers only the batch actually returned. A single legacy/imported event larger
+than the byte ceiling is returned alone to preserve cursor progress; normal
+HTTP acceptance constrains individual events with `MaxBodyBytes`.
 
 When the recipient later polls with cursor `C`, Pinakes must durably record that
 all delivery sequences below `C` were received before returning the next

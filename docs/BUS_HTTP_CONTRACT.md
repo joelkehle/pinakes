@@ -79,7 +79,10 @@ This doc describes the extracted bus contract as implemented by:
   - response: `events`, `cursor`
   - delivery is at-least-once; clients deduplicate by `message_id`
   - each response is bounded by `MaxInboxEventsPerAgent` and
-    `MaxInboxBytesPerAgent`; durable rows beyond the batch remain pending
+    the SQLite response byte ceiling; durable rows beyond the batch remain
+    pending. A single legacy/imported event larger than the byte ceiling is
+    returned alone so its cursor can advance; normally `MaxBodyBytes` keeps an
+    accepted event below the ceiling.
   - the returned cursor covers only the events included in that response
   - polling later with cursor `C` durably records every delivery sequence below
     `C` as received before the next response is returned
@@ -271,7 +274,8 @@ This doc describes the extracted bus contract as implemented by:
   - default: `86400` (24h); `-1` disables
 - `MAX_INBOX_BYTES_PER_AGENT`
   - approximate retained payload byte budget per agent inbox; oldest events evicted first, newest always kept
-  - default: `33554432` (32 MiB); `-1` disables
+  - default: `33554432` (32 MiB); `-1` disables in-memory projection eviction
+    but not the independent 32 MiB SQLite response safety ceiling
 - `MAX_OBSERVE_BYTES`
   - approximate retained payload byte budget for the observe event ring; oldest events evicted first, newest always kept
   - default: `67108864` (64 MiB); `-1` disables
@@ -344,8 +348,10 @@ The bus is in-memory at runtime; without eviction its memory grows without bound
 In-memory inbox and observe projections are additionally bounded by byte
 budgets (`MaxInboxBytesPerAgent`, `MaxObserveBytes`). SQLite delivery rows,
 not the projection, are authoritative for unreceived direct messages. SQLite
-inbox responses use the inbox count and byte budgets as per-poll batch limits;
-the response cursor advances only through the returned batch.
+inbox responses use the inbox count limit and the smaller of a positive
+projection byte budget or an independent 32 MiB safety ceiling. Disabling
+projection byte eviction does not disable this response ceiling. The response
+cursor advances only through the returned batch.
 
 Inbox poll-time reclamation: cursor values originate from prior poll responses, so a poll at cursor `C` proves the agent received every event below `C`; the bus frees those events immediately. Clients must not rely on re-reading inbox events below their last-acknowledged cursor (this was already unreliable under the count cap).
 

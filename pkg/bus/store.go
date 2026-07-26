@@ -51,10 +51,10 @@ type Config struct {
 	PushShutdownTimeout    time.Duration
 	MaxInboxEventsPerAgent int
 	MaxObserveEvents       int
-	// MaxInboxBytesPerAgent bounds the approximate retained payload bytes per
-	// agent inbox; oldest events are evicted first. Counts alone do not bound
-	// memory when individual bodies are large. Defaults to 32 MiB; negative
-	// disables.
+	// MaxInboxBytesPerAgent bounds the approximate retained payload bytes in
+	// each in-memory agent inbox projection; oldest events are evicted first.
+	// Defaults to 32 MiB; negative disables projection eviction. SQLite
+	// response batches retain an independent 32 MiB safety ceiling.
 	MaxInboxBytesPerAgent int
 	// MaxObserveBytes bounds the approximate retained payload bytes of the
 	// observe ring. Defaults to 64 MiB; negative disables.

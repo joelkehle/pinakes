@@ -446,4 +446,21 @@ func TestSQLiteDurableInboxReturnsBoundedBatches(t *testing.T) {
 			t.Fatalf("byte-bounded events=%d next=%d want events=1 next=1", len(events), next)
 		}
 	})
+
+	t.Run("projection disable retains response safety ceiling", func(t *testing.T) {
+		s, err := NewSQLiteStore(filepath.Join(t.TempDir(), "disabled-projection-budget.db"), Config{
+			MaxInboxBytesPerAgent: -1,
+		})
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer s.Close()
+		if s.inner.cfg.MaxInboxBytesPerAgent != 0 {
+			t.Fatalf("projection byte eviction was not disabled: %d", s.inner.cfg.MaxInboxBytesPerAgent)
+		}
+		_, maxBytes := s.durableInboxBatchLimits()
+		if maxBytes != durableInboxMaxBatchBytes {
+			t.Fatalf("durable response max bytes=%d want=%d", maxBytes, durableInboxMaxBatchBytes)
+		}
+	})
 }
