@@ -1,3 +1,11 @@
+---
+summary: "Current BUSFT roadmap for separate Pinakes authorities, durability decisions, explicit namespaces, and held identity work."
+read_when:
+  - Reviewing the origin or requirements of a BUSFT work package.
+  - Comparing current Pinakes decisions with the original 2026-07-08 proposal.
+status: draft-roadmap
+---
+
 # JK-SPEC-BUSFT-001 — Fault-Tolerant Pinakes Bus
 
 - ID: JK-SPEC-BUSFT-001
@@ -11,10 +19,9 @@
 
 The Pinakes bus is the coordination fabric for Joel's agent ecosystem — IP
 Agency workers, intern PM, wwi, and future consumers all depend on it. Pinakes
-currently has two separate authorities: the JK authority runs on Keystone, and
-the UCLA authority remains on Beelink pending its approved relocation to
-Keystone. Keeping both authorities healthy during that move is the immediate
-goal.
+currently has two separate authorities, JK and UCLA, running independently on
+Keystone. The relocation is complete; the immediate work is to settle
+durability and explicit-namespace decisions without combining the authorities.
 
 Consolidating those authorities is a later planning decision, not a settled
 architecture or part of the current relocation. Explicit namespaces preserve a
@@ -23,15 +30,14 @@ topology.
 
 ## 2. Constraints and principles
 
-- B1. Separate authorities now. JK and UCLA remain distinct through the UCLA
-  relocation and acceptance period. Consolidation requires a later explicit
-  decision.
+- B1. Separate authorities now. JK and UCLA remain distinct. Consolidation
+  requires a later explicit decision.
 - B2. Extraction seam. Namespace boundaries must make either continued
   separation or a future consolidation/extraction possible without rewriting
   clients.
-- B3. Must-be-up tier. Both authorities are intended to run on Keystone after
-  the UCLA relocation. Beelink remains the UCLA authority and rollback source
-  until that relocation is accepted.
+- B3. Must-be-up tier. Both authorities run on Keystone. Beelink and the
+  retained snapshots remain rollback assets until their approved retention
+  period ends.
 - B4. n=1 honesty (inherited FAULTTOL C6). No clustered brokers, no Raft,
   no Kafka. The bus is a small Go service; its fault tolerance comes from
   placement, the selected recovery model, and reprovisionability
@@ -67,9 +73,9 @@ Access & exposure
 - BF-9 Audit log: every publish/subscribe denial and every cross-scope (`shared.*`) message is logged with identity and timestamp.
 
 Migration
-- BF-10 Relocate the UCLA authority from Beelink to its own Keystone instance
-  without combining it with the JK authority. Preserve the Beelink authority
-  and rollback assets through the acceptance period.
+- BF-10 Keep the UCLA authority separate on Keystone. Preserve the Beelink
+  authority and rollback assets through the approved retention period, then
+  execute the separately approved demotion procedure.
 - BF-11 Client SDK (shared-pinakes Go client) gains: endpoint from env/Infisical (not hardcoded host), reconnect with exponential backoff + jitter, and idempotency guidance in its README (B5).
 
 ## 4. Contribution and acceptance model
@@ -95,16 +101,16 @@ Migration
 - WP3: Client SDK hardening (BF-11) — env-based endpoint, reconnect/backoff, idempotency docs.
 - WP4: Identity/token registry + audit log (BF-8, BF-9), held pending a
   Joel/Codex discussion of the Buzz-derived design.
-- WP5: Keystone deploy config and UCLA authority relocation (BF-1, BF-7).
+- WP5: Keystone deploy config and UCLA authority relocation (BF-1, BF-7);
+  complete.
 - WP6: Extraction procedure document (BF-6) — paper deliverable, proves the seam.
 - WP7: Beelink demotion runbook (BF-10) — executed only after UCLA relocation
   acceptance and the required soak.
 
-Current order: release and deploy WP1 compatibility support → complete the WP5
-UCLA relocation while keeping authorities separate → decide WP2 recovery
-semantics → plan any consolidation. Explicit namespace migration is a
-prerequisite to consolidation. WP4 remains held; WP3 and WP6 follow the
-topology and contract decisions.
+Current order: WP1 compatibility support and the WP5 UCLA relocation are
+complete → decide WP2 recovery semantics → complete explicit namespace
+planning → consider whether any consolidation rehearsal should be approved.
+WP4 remains held; WP3 and WP6 follow the topology and contract decisions.
 
 ## 6. Acceptance
 
