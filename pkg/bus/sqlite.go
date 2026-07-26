@@ -30,9 +30,10 @@ type SQLiteStore struct {
 	closeErr     error
 	backgroundWG sync.WaitGroup
 
-	// deliveryPersistErr makes callback receipt write failures visible to
-	// health checks until a later receipt write or shutdown recovery succeeds.
-	deliveryPersistErr error
+	// deliveryPersistErrors keeps callback receipt write failures visible per
+	// delivery until that same delivery succeeds or shutdown recovery requeues
+	// all attempting rows.
+	deliveryPersistErrors map[string]error
 
 	// testHookBeforeCommit, if non-nil, is invoked inside persistAfterSend
 	// and CreateConversation's transaction right before Commit. Returning a
@@ -179,9 +180,10 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		}
 	}()
 	s := &SQLiteStore{
-		inner:     inner,
-		db:        db,
-		pruneStop: make(chan struct{}),
+		inner:                 inner,
+		db:                    db,
+		pruneStop:             make(chan struct{}),
+		deliveryPersistErrors: map[string]error{},
 	}
 	if err := s.backfillLegacyDeliveryState(); err != nil {
 		db.Close()
@@ -383,7 +385,7 @@ func (s *SQLiteStore) Close() error {
 			last_error = CASE WHEN last_error = '' THEN 'shutdown recovery' ELSE last_error END
 			WHERE status = 'attempting'`, timeToString(s.inner.now()))
 		if recoveryErr == nil {
-			s.deliveryPersistErr = nil
+			clear(s.deliveryPersistErrors)
 		}
 		s.mu.Unlock()
 
@@ -991,9 +993,9 @@ func (s *SQLiteStore) Health() map[string]any {
 	out["pending_deliveries"] = pending
 	out["failed_deliveries"] = failed
 	s.mu.Lock()
-	persistErr := s.deliveryPersistErr
+	persistErrors := len(s.deliveryPersistErrors)
 	s.mu.Unlock()
-	if persistErr != nil {
+	if persistErrors > 0 {
 		out["ok"] = false
 		out["status"] = "degraded"
 		out["delivery_persistence_error"] = true

@@ -532,6 +532,87 @@ func TestSQLiteCloseRecoversAttemptingPushAfterShutdownTimeout(t *testing.T) {
 	}
 }
 
+func TestSQLiteReceiptErrorSurvivesUnrelatedReceiptSuccess(t *testing.T) {
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer callback.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "push-receipt-error.db")
+	cfg := Config{Clock: time.Now, PushMaxAttempts: 1}
+	s, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := s.RegisterAgent(RegisterAgentInput{
+		AgentID: "ucla.sender", Mode: AgentModePull, TTLSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("register sender: %v", err)
+	}
+	if _, err := s.RegisterAgent(RegisterAgentInput{
+		AgentID: "ucla.receiver", Mode: AgentModePush,
+		CallbackURL: callback.URL, TTLSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("register receiver: %v", err)
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER fail_first_receipt
+		BEFORE UPDATE OF status ON deliveries
+		WHEN OLD.message_id = 'm-000001' AND NEW.status = 'received'
+		BEGIN
+			SELECT RAISE(ABORT, 'injected receipt persistence failure');
+		END`); err != nil {
+		t.Fatalf("create receipt failure trigger: %v", err)
+	}
+	first, _, err := s.SendMessage(SendMessageInput{
+		From: "ucla.sender", To: "ucla.receiver", RequestID: "receipt-error-1",
+		Type: MessageTypeInform, Body: "first transport succeeds",
+	})
+	if err != nil {
+		t.Fatalf("send first: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if degraded, _ := s.Health()["delivery_persistence_error"].(bool); degraded {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if degraded, _ := s.Health()["delivery_persistence_error"].(bool); !degraded {
+		t.Fatal("receipt persistence error did not degrade health")
+	}
+	waitForDeliveryStatus(t, s, first.MessageID, "attempting", time.Second)
+
+	second, _, err := s.SendMessage(SendMessageInput{
+		From: "ucla.sender", To: "ucla.receiver", RequestID: "receipt-error-2",
+		Type: MessageTypeInform, Body: "unrelated receipt succeeds",
+	})
+	if err != nil {
+		t.Fatalf("send second: %v", err)
+	}
+	waitForDeliveryStatus(t, s, second.MessageID, "received", 2*time.Second)
+	health := s.Health()
+	if degraded, _ := health["delivery_persistence_error"].(bool); !degraded || health["ok"] != false {
+		t.Fatalf("unrelated success hid first receipt error: %#v", health)
+	}
+
+	if _, err := s.db.Exec(`DROP TRIGGER fail_first_receipt`); err != nil {
+		t.Fatalf("drop receipt failure trigger: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close and recover attempting delivery: %v", err)
+	}
+
+	reopened, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("reopen recovered store: %v", err)
+	}
+	defer reopened.Close()
+	waitForDeliveryStatus(t, reopened, first.MessageID, "received", 4*time.Second)
+	if health := reopened.Health(); health["ok"] != true {
+		t.Fatalf("health stayed degraded after delivery recovery: %#v", health)
+	}
+}
+
 func TestSQLiteQueuedPushDeliversAfterReregistration(t *testing.T) {
 	delivered := make(chan string, 1)
 	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -255,6 +255,67 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMigrateJSONStateDoesNotBackfillReceivedInform(t *testing.T) {
+	tmp := t.TempDir()
+	statePath := filepath.Join(tmp, "state.json")
+	dbPath := filepath.Join(tmp, "bus.db")
+	now := time.Date(2026, 6, 10, 0, 30, 0, 0, time.UTC)
+	cfg := migrateTestConfig(func() time.Time { return now })
+
+	ps, err := NewPersistentStore(statePath, cfg)
+	if err != nil {
+		t.Fatalf("new persistent store: %v", err)
+	}
+	for _, id := range []string{"ucla.a", "ucla.b"} {
+		if _, err := ps.RegisterAgent(RegisterAgentInput{
+			AgentID: id, Mode: AgentModePull, TTLSeconds: 60,
+		}); err != nil {
+			t.Fatalf("register %s: %v", id, err)
+		}
+	}
+	inform, _, err := ps.SendMessage(SendMessageInput{
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-received-inform",
+		Type: MessageTypeInform, Body: "already received",
+	})
+	if err != nil {
+		t.Fatalf("send inform: %v", err)
+	}
+	events, next, err := ps.PollInbox(PollInboxInput{AgentID: "ucla.b"})
+	if err != nil || len(events) != 1 || events[0].MessageID != inform.MessageID {
+		t.Fatalf("first poll events=%#v next=%d err=%v", events, next, err)
+	}
+	events, _, err = ps.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: next})
+	if err != nil || len(events) != 0 {
+		t.Fatalf("record legacy receipt events=%#v err=%v", events, err)
+	}
+
+	migrated, err := MigrateJSONStateToSQLite(statePath, dbPath, cfg)
+	if err != nil || !migrated {
+		t.Fatalf("migrate received inform: migrated=%v err=%v", migrated, err)
+	}
+	ss, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer ss.Close()
+
+	events, _, err = ss.PollInbox(PollInboxInput{AgentID: "ucla.b"})
+	if err != nil {
+		t.Fatalf("poll migrated inbox: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("received inform resurrected by SQLite startup backfill: %#v", events)
+	}
+	var markerRows int
+	if err := ss.db.Get(&markerRows, `SELECT COUNT(*) FROM schema_migrations WHERE key = ?`,
+		durableDeliveryBackfill); err != nil {
+		t.Fatalf("count migration marker: %v", err)
+	}
+	if markerRows != 1 {
+		t.Fatalf("migration markers=%d want=1", markerRows)
+	}
+}
+
 func TestMigrateJSONStateToSQLiteRecoversFromCrashedImport(t *testing.T) {
 	tmp := t.TempDir()
 	statePath := filepath.Join(tmp, "state.json")

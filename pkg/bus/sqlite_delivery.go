@@ -292,11 +292,13 @@ func (s *SQLiteStore) recordPushFailure(messageID string, attempts int, failure 
 }
 
 func (s *SQLiteStore) recordDeliveryPersistenceResultLocked(messageID, outcome string, err error) {
-	s.deliveryPersistErr = err
-	if err != nil {
-		s.inner.logger.Printf("ERROR persist push receipt message_id=%s outcome=%s err=%v",
-			messageID, outcome, err)
+	if err == nil {
+		delete(s.deliveryPersistErrors, messageID)
+		return
 	}
+	s.deliveryPersistErrors[messageID] = err
+	s.inner.logger.Printf("ERROR persist push receipt message_id=%s outcome=%s err=%v",
+		messageID, outcome, err)
 }
 
 func pushCycleBackoff(cfg Config, attempts int) time.Duration {

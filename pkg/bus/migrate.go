@@ -243,6 +243,14 @@ func importStateToSQLite(state persistentState, dbPath string, cfg Config) (migr
 		}
 		counts.idempotency++
 	}
+	appliedAt := time.Now().UTC()
+	if cfg.Clock != nil {
+		appliedAt = cfg.Clock().UTC()
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (key, applied_at)
+		VALUES (?, ?)`, durableDeliveryBackfill, timeToString(appliedAt)); err != nil {
+		return counts, fmt.Errorf("mark durable delivery migration complete: %w", err)
+	}
 
 	if err := tx.Commit(); err != nil {
 		return counts, err
