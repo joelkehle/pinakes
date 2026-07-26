@@ -17,7 +17,8 @@ status: decision-draft
 
 ## Decision requested
 
-Approve or revise the mapping rules and four cross-authority exceptions below.
+Approve or revise the mapping rules and identified cross-authority exceptions
+below.
 Approval of this document would authorize planning only. It would not authorize
 consumer edits, allowlist changes, identity changes, persisted-state rewrites,
 strict-mode activation, or bus consolidation.
@@ -152,7 +153,8 @@ copying one secret into two identities is not implied or approved.
 
 ## Proposed work sequence
 
-1. Joel decides the four exceptions and whether compatibility aliases retire.
+1. Joel decides the identified exceptions and whether compatibility aliases
+   retire.
 2. Create opt-in consumer proposals by owning repository. No person is assigned
    without acceptance.
 3. Update each consumer to make its target identity configurable and prove
@@ -170,7 +172,7 @@ finishes explicit naming without joining the authorities.
 
 - [ ] Preserve the full legacy ID after the scope prefix.
 - [ ] Retire unneeded compatibility aliases instead of canonizing them.
-- [ ] Confirm or retire each side of the four cross-authority exceptions.
+- [ ] Confirm or retire each side of the identified cross-authority exceptions.
 - [ ] Create no `shared.*` identity in this migration without a separate access
       contract.
 - [ ] Keep production migration and consolidation behind separate approvals.
