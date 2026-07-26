@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -17,6 +19,8 @@ type migrationCounts struct {
 	conversations int
 	messages      int
 	links         int
+	deliveries    int
+	idempotency   int
 }
 
 // MigrateJSONStateToSQLite performs a one-time import of the legacy JSON
@@ -31,12 +35,10 @@ type migrationCounts struct {
 //
 // Durable entities are imported: agents (registration metadata), agent
 // secrets, conversations, messages (including terminal/lifecycle timestamps),
-// conversation message positions, and id counters. Inbox buffers, observe
-// events, and idempotency entries are transient and intentionally dropped.
-// cfg is accepted for parity with store constructors and future knobs; the
-// import itself does not consult it (NewSQLiteStore prunes at startup).
+// conversation message positions, direct-delivery buffers, pull cursors,
+// duplicate receipts, and id counters. Observer events are intentionally
+// dropped because they are process-local.
 func MigrateJSONStateToSQLite(statePath, dbPath string, cfg Config) (bool, error) {
-	_ = cfg
 	if statePath == "" || dbPath == "" {
 		return false, nil
 	}
@@ -67,7 +69,7 @@ func MigrateJSONStateToSQLite(statePath, dbPath string, cfg Config) (bool, error
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return false, fmt.Errorf("create sqlite db dir: %w", err)
 	}
-	counts, err := importStateToSQLite(state, tmpPath)
+	counts, err := importStateToSQLite(state, tmpPath, cfg)
 	if err != nil {
 		// Remove the failed temp import (plus WAL siblings, best effort) and let
 		// the next boot retry instead of skipping migration forever.
@@ -85,17 +87,18 @@ func MigrateJSONStateToSQLite(statePath, dbPath string, cfg Config) (bool, error
 	if err := os.Rename(statePath, statePath+".migrated"); err != nil {
 		return false, fmt.Errorf("rename migrated state file %s: %w", statePath, err)
 	}
-	log.Printf("INFO migrated JSON state %s -> sqlite %s: agents=%d secrets=%d conversations=%d messages=%d conversation_links=%d",
-		statePath, dbPath, counts.agents, counts.secrets, counts.conversations, counts.messages, counts.links)
+	log.Printf("INFO migrated JSON state %s -> sqlite %s: agents=%d secrets=%d conversations=%d messages=%d conversation_links=%d deliveries=%d idempotency=%d",
+		statePath, dbPath, counts.agents, counts.secrets, counts.conversations,
+		counts.messages, counts.links, counts.deliveries, counts.idempotency)
 	return true, nil
 }
 
 // importStateToSQLite writes the durable entities from a decoded legacy state
 // into a new SQLite database in one transaction (all-or-nothing).
-func importStateToSQLite(state persistentState, dbPath string) (migrationCounts, error) {
+func importStateToSQLite(state persistentState, dbPath string, cfg Config) (migrationCounts, error) {
 	var counts migrationCounts
 
-	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
+	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return counts, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -164,6 +167,92 @@ func importStateToSQLite(state persistentState, dbPath string) (migrationCounts,
 	}
 	if err := saveCountersTo(tx, state.NextConversationID, state.NextMessageID); err != nil {
 		return counts, fmt.Errorf("import counters: %w", err)
+	}
+	defaultTTL := cfg.DefaultMessageTTL
+	if defaultTTL <= 0 {
+		defaultTTL = 10 * time.Minute
+	}
+	for agentID, inbox := range state.Inboxes {
+		base := state.InboxBase[agentID]
+		deliverable := make([]InboxEvent, 0, len(inbox))
+		for _, event := range inbox {
+			pm, ok := state.Messages[event.MessageID]
+			if !ok {
+				log.Printf("WARN dropping delivery for unknown message %s during migration", event.MessageID)
+				continue
+			}
+			message := pm.toMessage()
+			if message.Type == MessageTypeRequest &&
+				(message.State == StateExecuting || isTerminal(message.State)) {
+				continue
+			}
+			deliverable = append(deliverable, event)
+		}
+		if _, err := tx.Exec(`INSERT INTO delivery_cursors
+			(target_agent_id, next_seq, acknowledged_cursor) VALUES (?, ?, ?)`,
+			agentID, base+len(deliverable), base); err != nil {
+			return counts, fmt.Errorf("import delivery cursor %s: %w", agentID, err)
+		}
+		for offset, event := range deliverable {
+			pm, ok := state.Messages[event.MessageID]
+			if !ok {
+				continue
+			}
+			message := pm.toMessage()
+			expiresAt := message.TTLExpiresAt
+			if expiresAt.IsZero() {
+				expiresAt = message.CreatedAt.Add(defaultTTL)
+			}
+			if !message.GraceUntil.IsZero() && message.GraceUntil.Before(expiresAt) {
+				expiresAt = message.GraceUntil
+			}
+			if _, err := tx.Exec(`INSERT INTO deliveries
+				(target_agent_id, delivery_seq, message_id, status, next_attempt_at,
+				 attempt_count, received_at, expires_at, last_error)
+				VALUES (?, ?, ?, 'pending', ?, 0, '', ?, '')`,
+				agentID, base+offset, event.MessageID,
+				timeToString(message.CreatedAt), timeToString(expiresAt)); err != nil {
+				return counts, fmt.Errorf("import delivery %s/%s: %w", agentID, event.MessageID, err)
+			}
+			counts.deliveries++
+		}
+	}
+	for agentID, base := range state.InboxBase {
+		if _, ok := state.Inboxes[agentID]; ok {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO delivery_cursors
+			(target_agent_id, next_seq, acknowledged_cursor) VALUES (?, ?, ?)`,
+			agentID, base, base); err != nil {
+			return counts, fmt.Errorf("import empty delivery cursor %s: %w", agentID, err)
+		}
+	}
+	idempotencyWindow := cfg.IdempotencyWindow
+	if idempotencyWindow <= 0 {
+		idempotencyWindow = 24 * time.Hour
+	}
+	for key, entry := range state.Idempotency {
+		parts := strings.Split(key, "\x1f")
+		if len(parts) != 3 {
+			log.Printf("WARN dropping malformed idempotency key during migration")
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO idempotency
+			(from_agent, to_agent, request_id, message_id, accepted_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			parts[0], parts[1], parts[2], entry.MessageID,
+			timeToString(entry.CreatedAt), timeToString(entry.CreatedAt.Add(idempotencyWindow))); err != nil {
+			return counts, fmt.Errorf("import idempotency receipt for %s: %w", entry.MessageID, err)
+		}
+		counts.idempotency++
+	}
+	appliedAt := time.Now().UTC()
+	if cfg.Clock != nil {
+		appliedAt = cfg.Clock().UTC()
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (key, applied_at)
+		VALUES (?, ?)`, durableDeliveryBackfill, timeToString(appliedAt)); err != nil {
+		return counts, fmt.Errorf("mark durable delivery migration complete: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -17,6 +17,9 @@ func TestPushQueueDefaults(t *testing.T) {
 	if got := s.cfg.PushWorkers; got != 4 {
 		t.Fatalf("push workers=%d want=4", got)
 	}
+	if got := s.cfg.PushShutdownTimeout; got != 15*time.Second {
+		t.Fatalf("push shutdown timeout=%s want=15s", got)
+	}
 }
 
 // TestPushQueueDropsWhenFull wedges the single push worker on a callback

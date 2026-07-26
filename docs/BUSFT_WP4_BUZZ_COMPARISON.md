@@ -92,7 +92,7 @@ missing/tampered history rather than preventing the underlying action.
 | Request proof | HMAC over HTTP payload | signed canonical event | signed envelopes can remain verifiable after transport |
 | Identity | allowlisted string ID plus passport metadata | public key is cryptographic identity | Pinakes still needs human-readable stable IDs and scope policy |
 | Authorization | server-derived scope plus shared grants | relay/channel membership checks | keep authorization server-authoritative; signatures do not grant access |
-| Duplicate handling | request ID mapping, currently transient in SQLite runtime | event hash and idempotent insert | durable Pinakes idempotency is part of #5 regardless of WP4 |
+| Duplicate handling | durable `(from, to, request_id)` receipt in SQLite | event hash and idempotent insert | durable Pinakes idempotency belongs to #5 regardless of WP4 |
 | Delivery | direct request/response/inform lifecycle | relay event distribution | Buzz does not replace Pinakes's direct-message lifecycle contract |
 | Transient feed | bounded in-memory observe events | ephemeral event kinds | strong conceptual match: explicitly mark events that are not durable |
 | Audit | ordinary denial logs | separate hash-chained append-only log | worth borrowing only after audit contents, retention, and failure policy are decided |

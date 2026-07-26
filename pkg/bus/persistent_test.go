@@ -88,6 +88,37 @@ func TestPersistentStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPersistentStoreObserverEventsAreProcessLocal(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	cfg := Config{Clock: time.Now}
+	s1, err := NewPersistentStore(statePath, cfg)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	if _, err := s1.RegisterAgent(RegisterAgentInput{
+		AgentID: "ucla.observer-source", Mode: AgentModePull,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	events, _ := s1.ObserveSince(0, ObserveFilter{}, 0)
+	if len(events) == 0 {
+		t.Fatalf("expected live observer event")
+	}
+	firstEpoch := s1.ObserveEpoch()
+
+	s2, err := NewPersistentStore(statePath, cfg)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if s2.ObserveEpoch() == firstEpoch {
+		t.Fatalf("observer epoch must change on restart")
+	}
+	events, cursor := s2.ObserveSince(0, ObserveFilter{}, 0)
+	if len(events) != 0 || cursor != 0 {
+		t.Fatalf("observer history restored across process epoch: events=%d cursor=%d", len(events), cursor)
+	}
+}
+
 func TestPersistentStoreReadSweepPersist(t *testing.T) {
 	tmp := t.TempDir()
 	statePath := filepath.Join(tmp, "state.json")

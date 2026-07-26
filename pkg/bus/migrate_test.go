@@ -105,6 +105,22 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send waiting message: %v", err)
 	}
+	executing, _, err := ps.SendMessage(SendMessageInput{
+		To:             "ucla.b",
+		From:           "ucla.a",
+		ConversationID: done.ConversationID,
+		RequestID:      "rid-migrate-executing",
+		Type:           MessageTypeRequest,
+		Body:           "already accepted",
+	})
+	if err != nil {
+		t.Fatalf("send accepted message: %v", err)
+	}
+	if err := ps.Ack(AckInput{
+		AgentID: "ucla.b", MessageID: executing.MessageID, Status: "accepted",
+	}); err != nil {
+		t.Fatalf("accept message: %v", err)
+	}
 
 	migrated, err := MigrateJSONStateToSQLite(statePath, dbPath, cfg)
 	if err != nil {
@@ -158,7 +174,7 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if len(convs) != 1 {
 		t.Fatalf("expected 1 conversation after migration, got %d", len(convs))
 	}
-	if convs[0].ConversationID != done.ConversationID || convs[0].MessageCount != 2 {
+	if convs[0].ConversationID != done.ConversationID || convs[0].MessageCount != 3 {
 		t.Fatalf("conversation mismatch after migration: %+v", convs[0])
 	}
 
@@ -182,6 +198,28 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if waitingMsg.TTLExpiresAt.IsZero() {
 		t.Fatalf("waiting message lost TTLExpiresAt in migration")
 	}
+	executingMsg, ok := ss.GetMessageForTest(executing.MessageID)
+	if !ok || executingMsg.State != StateExecuting {
+		t.Fatalf("accepted message lifecycle lost in migration: %+v found=%v", executingMsg, ok)
+	}
+	retry, duplicate, err := ss.SendMessage(SendMessageInput{
+		To:             "ucla.b",
+		From:           "ucla.a",
+		ConversationID: done.ConversationID,
+		RequestID:      "rid-migrate-waiting",
+		Type:           MessageTypeRequest,
+		Body:           "leave me waiting",
+	})
+	if err != nil || !duplicate || retry.MessageID != waiting.MessageID {
+		t.Fatalf("duplicate receipt lost in migration: retry=%+v duplicate=%v err=%v", retry, duplicate, err)
+	}
+	inbox, next, err := ss.PollInbox(PollInboxInput{AgentID: "ucla.b"})
+	if err != nil {
+		t.Fatalf("poll migrated inbox: %v", err)
+	}
+	if len(inbox) != 1 || inbox[0].MessageID != waiting.MessageID || next != 1 {
+		t.Fatalf("migration redelivered acknowledged request: events=%#v next=%d", inbox, next)
+	}
 
 	// Ordering must survive via the conversation_messages positions.
 	_, msgs, _, err := ss.ListConversationMessages(ListConversationMessagesInput{
@@ -192,7 +230,8 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list conversation messages after migration: %v", err)
 	}
-	if len(msgs) != 2 || msgs[0].MessageID != done.MessageID || msgs[1].MessageID != waiting.MessageID {
+	if len(msgs) != 3 || msgs[0].MessageID != done.MessageID ||
+		msgs[1].MessageID != waiting.MessageID || msgs[2].MessageID != executing.MessageID {
 		t.Fatalf("conversation ordering lost in migration: %+v", msgs)
 	}
 
@@ -207,11 +246,73 @@ func TestMigrateJSONStateToSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send after migration: %v", err)
 	}
-	if fresh.MessageID == done.MessageID || fresh.MessageID == waiting.MessageID {
+	if fresh.MessageID == done.MessageID || fresh.MessageID == waiting.MessageID ||
+		fresh.MessageID == executing.MessageID {
 		t.Fatalf("message id counter reset by migration: %s", fresh.MessageID)
 	}
 	if fresh.ConversationID == done.ConversationID {
 		t.Fatalf("conversation id counter reset by migration: %s", fresh.ConversationID)
+	}
+}
+
+func TestMigrateJSONStateDoesNotBackfillReceivedInform(t *testing.T) {
+	tmp := t.TempDir()
+	statePath := filepath.Join(tmp, "state.json")
+	dbPath := filepath.Join(tmp, "bus.db")
+	now := time.Date(2026, 6, 10, 0, 30, 0, 0, time.UTC)
+	cfg := migrateTestConfig(func() time.Time { return now })
+
+	ps, err := NewPersistentStore(statePath, cfg)
+	if err != nil {
+		t.Fatalf("new persistent store: %v", err)
+	}
+	for _, id := range []string{"ucla.a", "ucla.b"} {
+		if _, err := ps.RegisterAgent(RegisterAgentInput{
+			AgentID: id, Mode: AgentModePull, TTLSeconds: 60,
+		}); err != nil {
+			t.Fatalf("register %s: %v", id, err)
+		}
+	}
+	inform, _, err := ps.SendMessage(SendMessageInput{
+		To: "ucla.b", From: "ucla.a", RequestID: "rid-received-inform",
+		Type: MessageTypeInform, Body: "already received",
+	})
+	if err != nil {
+		t.Fatalf("send inform: %v", err)
+	}
+	events, next, err := ps.PollInbox(PollInboxInput{AgentID: "ucla.b"})
+	if err != nil || len(events) != 1 || events[0].MessageID != inform.MessageID {
+		t.Fatalf("first poll events=%#v next=%d err=%v", events, next, err)
+	}
+	events, _, err = ps.PollInbox(PollInboxInput{AgentID: "ucla.b", Cursor: next})
+	if err != nil || len(events) != 0 {
+		t.Fatalf("record legacy receipt events=%#v err=%v", events, err)
+	}
+
+	migrated, err := MigrateJSONStateToSQLite(statePath, dbPath, cfg)
+	if err != nil || !migrated {
+		t.Fatalf("migrate received inform: migrated=%v err=%v", migrated, err)
+	}
+	ss, err := NewSQLiteStore(dbPath, cfg)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer ss.Close()
+
+	events, _, err = ss.PollInbox(PollInboxInput{AgentID: "ucla.b"})
+	if err != nil {
+		t.Fatalf("poll migrated inbox: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("received inform resurrected by SQLite startup backfill: %#v", events)
+	}
+	var markerRows int
+	if err := ss.db.Get(&markerRows, `SELECT COUNT(*) FROM schema_migrations WHERE key = ?`,
+		durableDeliveryBackfill); err != nil {
+		t.Fatalf("count migration marker: %v", err)
+	}
+	if markerRows != 1 {
+		t.Fatalf("migration markers=%d want=1", markerRows)
 	}
 }
 

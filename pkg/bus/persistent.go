@@ -89,7 +89,6 @@ func (p *PersistentStore) stateSnapshot() persistentState {
 	state := persistentState{
 		NextConversationID:   p.inner.nextConversationID,
 		NextMessageID:        p.inner.nextMessageID,
-		NextObserveID:        p.inner.nextObserveID,
 		PushFailures:         p.inner.pushFailures,
 		PushSuccesses:        p.inner.pushSuccesses,
 		Agents:               map[string]Agent{},
@@ -99,7 +98,6 @@ func (p *PersistentStore) stateSnapshot() persistentState {
 		ConversationMessages: map[string][]string{},
 		Inboxes:              map[string][]InboxEvent{},
 		InboxBase:            map[string]int{},
-		ObserveEvents:        append([]ObserveEvent{}, p.inner.observeEvents...),
 		Idempotency:          map[string]idempotencyEntry{},
 	}
 	for k, v := range p.inner.agents {
@@ -145,7 +143,7 @@ func (p *PersistentStore) applyState(state persistentState) {
 
 	p.inner.nextConversationID = state.NextConversationID
 	p.inner.nextMessageID = state.NextMessageID
-	p.inner.nextObserveID = state.NextObserveID
+	p.inner.nextObserveID = 0
 	p.inner.pushFailures = state.PushFailures
 	p.inner.pushSuccesses = state.PushSuccesses
 
@@ -182,7 +180,9 @@ func (p *PersistentStore) applyState(state persistentState) {
 	for k, v := range state.InboxBase {
 		p.inner.inboxBase[k] = v
 	}
-	p.inner.observeEvents = append([]ObserveEvent{}, state.ObserveEvents...)
+	// Observer events and their cursors are process-local. Legacy files may
+	// contain them, but a restart begins a fresh observer epoch.
+	p.inner.observeEvents = []ObserveEvent{}
 	p.inner.observeBytes = 0
 	for i := range p.inner.observeEvents {
 		p.inner.observeEvents[i].Size = observeEventSize(p.inner.observeEvents[i])
@@ -319,8 +319,15 @@ func (p *PersistentStore) SendMessage(input SendMessageInput) (*Message, bool, e
 // and transient memory. Poll-time inbox reclamation that goes unpersisted is
 // harmless — it re-runs on the next poll after a reload.
 func (p *PersistentStore) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
+	agentID := strings.TrimSpace(input.AgentID)
+	p.inner.mu.Lock()
+	before := p.inner.inboxBase[agentID]
+	p.inner.mu.Unlock()
 	events, cursor, err := p.inner.PollInbox(input)
-	if err == nil && len(events) > 0 {
+	p.inner.mu.Lock()
+	after := p.inner.inboxBase[agentID]
+	p.inner.mu.Unlock()
+	if err == nil && (len(events) > 0 || after > before) {
 		p.persistBestEffort()
 	}
 	return events, cursor, err
@@ -364,6 +371,10 @@ func (p *PersistentStore) ObserveSince(afterID int64, filter ObserveFilter, wait
 	return p.inner.ObserveSince(afterID, filter, wait)
 }
 
+func (p *PersistentStore) ObserveEpoch() string {
+	return p.inner.ObserveEpoch()
+}
+
 func (p *PersistentStore) Health() map[string]any {
 	out := p.inner.Health()
 	if msg := p.lastPersistError(); msg != "" {
@@ -391,3 +402,4 @@ func (p *PersistentStore) lastPersistError() string {
 }
 
 var _ AgentSecretStore = (*PersistentStore)(nil)
+var _ ObserveEpochProvider = (*PersistentStore)(nil)

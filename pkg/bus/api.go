@@ -27,3 +27,10 @@ type AgentSecretStore interface {
 	AgentSecrets() (map[string]string, error)
 	SetAgentSecret(agentID, secret string) error
 }
+
+// ObserveEpochProvider identifies the process-local observer stream. Clients
+// compare this value across reconnects instead of treating SSE cursors as
+// durable across restarts.
+type ObserveEpochProvider interface {
+	ObserveEpoch() string
+}

@@ -3,6 +3,7 @@ package bus
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,18 +16,24 @@ import (
 )
 
 // SQLiteStore implements bus.API with SQLite-backed persistence.
-// It delegates runtime logic (sweep, push callbacks, observe events, inbox buffering)
-// to an embedded in-memory Store, and persists the core entities (agents,
-// conversations, messages) to SQLite with write-through semantics.
-// Transient data (inboxes, observe events, idempotency) stays in-memory only.
+// It delegates runtime logic to an embedded in-memory Store while SQLite owns
+// accepted messages, delivery state, pull cursors, and duplicate receipts.
+// Observer events remain process-local and transient.
 type SQLiteStore struct {
 	inner *Store
 	db    *sqlx.DB
 	mu    sync.Mutex
 
 	// pruneStop terminates the background DB-prune goroutine on Close.
-	pruneStop chan struct{}
-	pruneOnce sync.Once
+	pruneStop    chan struct{}
+	closeOnce    sync.Once
+	closeErr     error
+	backgroundWG sync.WaitGroup
+
+	// deliveryPersistErrors keeps callback receipt write failures visible per
+	// delivery until that same delivery succeeds or shutdown recovery requeues
+	// all attempting rows.
+	deliveryPersistErrors map[string]error
 
 	// testHookBeforeCommit, if non-nil, is invoked inside persistAfterSend
 	// and CreateConversation's transaction right before Commit. Returning a
@@ -95,11 +102,49 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 	PRIMARY KEY (conversation_id, position)
 );
 
-CREATE TABLE IF NOT EXISTS counters (
-	key   TEXT PRIMARY KEY,
-	value INTEGER NOT NULL DEFAULT 0
-);
-`
+	CREATE TABLE IF NOT EXISTS counters (
+		key   TEXT PRIMARY KEY,
+		value INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS delivery_cursors (
+		target_agent_id    TEXT PRIMARY KEY,
+		next_seq           INTEGER NOT NULL DEFAULT 0,
+		acknowledged_cursor INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS deliveries (
+		target_agent_id TEXT NOT NULL,
+		delivery_seq    INTEGER NOT NULL,
+		message_id      TEXT NOT NULL UNIQUE,
+		status          TEXT NOT NULL DEFAULT 'pending',
+		next_attempt_at TEXT NOT NULL DEFAULT '',
+		attempt_count   INTEGER NOT NULL DEFAULT 0,
+		received_at     TEXT NOT NULL DEFAULT '',
+		expires_at      TEXT NOT NULL,
+		last_error      TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (target_agent_id, delivery_seq),
+		FOREIGN KEY (message_id) REFERENCES messages(message_id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS deliveries_pending_idx
+		ON deliveries(status, next_attempt_at);
+
+	CREATE TABLE IF NOT EXISTS idempotency (
+		from_agent TEXT NOT NULL,
+		to_agent   TEXT NOT NULL,
+		request_id TEXT NOT NULL,
+		message_id TEXT NOT NULL,
+		accepted_at TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		PRIMARY KEY (from_agent, to_agent, request_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS schema_migrations (
+		key        TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	);
+	`
 
 func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 	if dir := filepath.Dir(dbPath); dir != "." {
@@ -108,7 +153,7 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		}
 	}
 
-	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
+	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -128,10 +173,26 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 	}
 
 	inner := NewStore(cfg)
+	storeReady := false
+	defer func() {
+		if !storeReady {
+			_ = inner.closePushWorkers()
+		}
+	}()
 	s := &SQLiteStore{
-		inner:     inner,
-		db:        db,
-		pruneStop: make(chan struct{}),
+		inner:                 inner,
+		db:                    db,
+		pruneStop:             make(chan struct{}),
+		deliveryPersistErrors: map[string]error{},
+	}
+	if err := s.backfillLegacyDeliveryState(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill durable delivery state: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE deliveries SET status = 'pending'
+		WHERE status = 'attempting'`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("recover push deliveries: %w", err)
 	}
 
 	// Prune before loading so a DB that grew past retention while the bus was
@@ -146,8 +207,17 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 
-	go s.pruneLoop()
+	s.backgroundWG.Add(2)
+	go func() {
+		defer s.backgroundWG.Done()
+		s.pruneLoop()
+	}()
+	go func() {
+		defer s.backgroundWG.Done()
+		s.deliveryLoop()
+	}()
 
+	storeReady = true
 	return s, nil
 }
 
@@ -174,17 +244,33 @@ func (s *SQLiteStore) pruneDB(now time.Time) error {
 	defer s.mu.Unlock()
 
 	cfg := s.inner.cfg
+	nowString := timeToString(now)
+	if _, err := s.db.Exec(`UPDATE deliveries SET status = 'failed',
+		next_attempt_at = '', last_error = 'transport deadline expired'
+		WHERE status IN ('pending', 'attempting') AND expires_at <= ?`, nowString); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM idempotency WHERE expires_at < ?`, nowString); err != nil {
+		return err
+	}
 	if cfg.MessageMaxAge > 0 {
 		cutoff := timeToString(now.Add(-cfg.MessageMaxAge))
-		if _, err := s.db.Exec(`DELETE FROM messages WHERE created_at <> '' AND created_at < ?`, cutoff); err != nil {
+		if _, err := s.db.Exec(`DELETE FROM messages
+			WHERE created_at <> '' AND created_at < ?
+			AND message_id NOT IN (
+				SELECT message_id FROM deliveries WHERE status IN ('pending', 'attempting')
+			)`, cutoff); err != nil {
 			return err
 		}
 	}
 	if cfg.MessageRetention > 0 {
 		cutoff := timeToString(now.Add(-cfg.MessageRetention))
 		if _, err := s.db.Exec(`DELETE FROM messages
-			WHERE state IN ('completed', 'rejected', 'error')
-			AND (CASE WHEN terminal_at <> '' THEN terminal_at ELSE created_at END) < ?`, cutoff); err != nil {
+				WHERE state IN ('completed', 'rejected', 'error')
+				AND (CASE WHEN terminal_at <> '' THEN terminal_at ELSE created_at END) < ?
+				AND message_id NOT IN (
+					SELECT message_id FROM deliveries WHERE status IN ('pending', 'attempting')
+				)`, cutoff); err != nil {
 			return err
 		}
 	}
@@ -288,8 +374,24 @@ func ensureMessageColumns(db *sqlx.DB) error {
 }
 
 func (s *SQLiteStore) Close() error {
-	s.pruneOnce.Do(func() { close(s.pruneStop) })
-	return s.db.Close()
+	s.closeOnce.Do(func() {
+		close(s.pruneStop)
+		s.backgroundWG.Wait()
+		pushErr := s.inner.closePushWorkers()
+
+		s.mu.Lock()
+		_, recoveryErr := s.db.Exec(`UPDATE deliveries SET status = 'pending',
+			next_attempt_at = CASE WHEN next_attempt_at = '' THEN ? ELSE next_attempt_at END,
+			last_error = CASE WHEN last_error = '' THEN 'shutdown recovery' ELSE last_error END
+			WHERE status = 'attempting'`, timeToString(s.inner.now()))
+		if recoveryErr == nil {
+			clear(s.deliveryPersistErrors)
+		}
+		s.mu.Unlock()
+
+		s.closeErr = errors.Join(pushErr, recoveryErr, s.db.Close())
+	})
+	return s.closeErr
 }
 
 // --- load all state from SQLite into the in-memory Store ---
@@ -308,6 +410,9 @@ func (s *SQLiteStore) loadAll() error {
 		return err
 	}
 	if err := s.loadConversationMessages(); err != nil {
+		return err
+	}
+	if err := s.loadIdempotency(); err != nil {
 		return err
 	}
 	return nil
@@ -404,40 +509,55 @@ func (s *SQLiteStore) loadMessages() error {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var m Message
-		var metaJSON sql.NullString
-		var attachmentsJSON string
-		var createdAt, terminalAt, deliveredAt, lastProgressAt, ttlExpiresAt, graceUntil string
-		var queued int
-		if err := rows.Scan(&m.MessageID, &m.Type, &m.From, &m.To, &m.ConversationID,
-			&m.RequestID, &m.InReplyTo, &m.Body, &metaJSON, &attachmentsJSON, &m.State,
-			&createdAt, &terminalAt, &deliveredAt, &lastProgressAt, &ttlExpiresAt, &graceUntil, &queued); err != nil {
+		m, err := scanSQLiteMessage(rows)
+		if err != nil {
 			return err
 		}
-		if terminalAt != "" {
-			m.TerminalAt, _ = time.Parse(time.RFC3339Nano, terminalAt)
-		}
-		if metaJSON.Valid && metaJSON.String != "" {
-			_ = json.Unmarshal([]byte(metaJSON.String), &m.Meta)
-		}
-		_ = json.Unmarshal([]byte(attachmentsJSON), &m.Attachments)
-		m.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-		if deliveredAt != "" {
-			m.DeliveredAt, _ = time.Parse(time.RFC3339Nano, deliveredAt)
-		}
-		if lastProgressAt != "" {
-			m.LastProgressAt, _ = time.Parse(time.RFC3339Nano, lastProgressAt)
-		}
-		if ttlExpiresAt != "" {
-			m.TTLExpiresAt, _ = time.Parse(time.RFC3339Nano, ttlExpiresAt)
-		}
-		if graceUntil != "" {
-			m.GraceUntil, _ = time.Parse(time.RFC3339Nano, graceUntil)
-		}
-		m.QueuedForAgent = queued != 0
 		s.inner.messages[m.MessageID] = &m
 	}
 	return rows.Err()
+}
+
+type sqliteScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSQLiteMessage(scanner sqliteScanner, prefix ...any) (Message, error) {
+	var m Message
+	var metaJSON sql.NullString
+	var attachmentsJSON string
+	var createdAt, terminalAt, deliveredAt, lastProgressAt, ttlExpiresAt, graceUntil string
+	var queued int
+	dest := append(prefix,
+		&m.MessageID, &m.Type, &m.From, &m.To, &m.ConversationID,
+		&m.RequestID, &m.InReplyTo, &m.Body, &metaJSON, &attachmentsJSON, &m.State,
+		&createdAt, &terminalAt, &deliveredAt, &lastProgressAt, &ttlExpiresAt, &graceUntil, &queued,
+	)
+	if err := scanner.Scan(dest...); err != nil {
+		return Message{}, err
+	}
+	if terminalAt != "" {
+		m.TerminalAt, _ = time.Parse(time.RFC3339Nano, terminalAt)
+	}
+	if metaJSON.Valid && metaJSON.String != "" {
+		_ = json.Unmarshal([]byte(metaJSON.String), &m.Meta)
+	}
+	_ = json.Unmarshal([]byte(attachmentsJSON), &m.Attachments)
+	m.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	if deliveredAt != "" {
+		m.DeliveredAt, _ = time.Parse(time.RFC3339Nano, deliveredAt)
+	}
+	if lastProgressAt != "" {
+		m.LastProgressAt, _ = time.Parse(time.RFC3339Nano, lastProgressAt)
+	}
+	if ttlExpiresAt != "" {
+		m.TTLExpiresAt, _ = time.Parse(time.RFC3339Nano, ttlExpiresAt)
+	}
+	if graceUntil != "" {
+		m.GraceUntil, _ = time.Parse(time.RFC3339Nano, graceUntil)
+	}
+	m.QueuedForAgent = queued != 0
+	return m, nil
 }
 
 func (s *SQLiteStore) loadConversationMessages() error {
@@ -557,10 +677,28 @@ func (s *SQLiteStore) saveConversation(c *Conversation) error {
 }
 
 func saveMessageTo(exec sqliteExec, m *Message) error {
-	_, err := exec.Exec(`INSERT OR REPLACE INTO messages (message_id, type, from_agent, to_agent, conversation_id,
+	_, err := exec.Exec(`INSERT INTO messages (message_id, type, from_agent, to_agent, conversation_id,
 		request_id, in_reply_to, body, meta, attachments, state,
 		created_at, terminal_at, delivered_at, last_progress_at, ttl_expires_at, grace_until, queued_for_agent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(message_id) DO UPDATE SET
+			type = excluded.type,
+			from_agent = excluded.from_agent,
+			to_agent = excluded.to_agent,
+			conversation_id = excluded.conversation_id,
+			request_id = excluded.request_id,
+			in_reply_to = excluded.in_reply_to,
+			body = excluded.body,
+			meta = excluded.meta,
+			attachments = excluded.attachments,
+			state = excluded.state,
+			created_at = excluded.created_at,
+			terminal_at = excluded.terminal_at,
+			delivered_at = excluded.delivered_at,
+			last_progress_at = excluded.last_progress_at,
+			ttl_expires_at = excluded.ttl_expires_at,
+			grace_until = excluded.grace_until,
+			queued_for_agent = excluded.queued_for_agent`,
 		m.MessageID,
 		string(m.Type),
 		m.From,
@@ -612,83 +750,6 @@ func (s *SQLiteStore) saveCounters() error {
 	nextMsg := s.inner.nextMessageID
 	s.inner.mu.Unlock()
 	return saveCountersTo(s.db, nextConv, nextMsg)
-}
-
-// persistAfterSend persists the message row, its parent conversation, the
-// conversation_messages position link, and the counter advance from a single
-// SendMessage call. All four writes go through one SQL transaction so that a
-// crash mid-persist cannot leave a counter advanced past an unwritten row, a
-// message without its conversation, or a conversation without its position
-// link. Pre-v0.2.2 these were four separate auto-commit Execs, which produced
-// the conversation-count drift observed on bus bounce.
-func (s *SQLiteStore) persistAfterSend(m *Message) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.inner.mu.Lock()
-	var convCopy *Conversation
-	if c := s.inner.conversations[m.ConversationID]; c != nil {
-		cp := *c
-		convCopy = &cp
-	}
-	convMsgs := s.inner.conversationMessages[m.ConversationID]
-	nextConv := s.inner.nextConversationID
-	nextMsg := s.inner.nextMessageID
-	s.inner.mu.Unlock()
-
-	tx, err := s.db.Beginx()
-	if err != nil {
-		return err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if convCopy != nil {
-		if err := saveConversationTo(tx, convCopy); err != nil {
-			return err
-		}
-	}
-	if err := saveMessageTo(tx, m); err != nil {
-		return err
-	}
-	position := len(convMsgs) - 1
-	if err := saveConversationMessageTo(tx, m.ConversationID, m.MessageID, position); err != nil {
-		return err
-	}
-	if err := saveCountersTo(tx, nextConv, nextMsg); err != nil {
-		return err
-	}
-	if hook := s.testHookBeforeCommit; hook != nil {
-		if err := hook(); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	committed = true
-	return nil
-}
-
-// persistMessageState saves just the message row (state change after ack/event).
-func (s *SQLiteStore) persistMessageState(messageID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.inner.mu.Lock()
-	m, ok := s.inner.messages[messageID]
-	if !ok {
-		s.inner.mu.Unlock()
-		return nil
-	}
-	cp := *m
-	s.inner.mu.Unlock()
-
-	return s.saveMessage(&cp)
 }
 
 // --- bus.API implementation ---
@@ -755,13 +816,13 @@ func (s *SQLiteStore) CreateConversation(input CreateConversationInput) (*Conver
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.inner.mu.Lock()
 	nextConv := s.inner.nextConversationID
 	nextMsg := s.inner.nextMessageID
 	s.inner.mu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	tx, err := s.db.Beginx()
 	if err != nil {
@@ -797,55 +858,23 @@ func (s *SQLiteStore) ListConversations(filter ListConversationsFilter) []Conver
 }
 
 func (s *SQLiteStore) SendMessage(input SendMessageInput) (*Message, bool, error) {
-	m, dup, err := s.inner.SendMessage(input)
-	if err != nil {
-		return nil, false, err
-	}
-	if !dup {
-		if perr := s.persistAfterSend(m); perr != nil {
-			return nil, false, perr
-		}
-	}
-	return m, dup, nil
+	return s.inner.sendMessage(input, s.persistAcceptance)
 }
 
 func (s *SQLiteStore) PollInbox(input PollInboxInput) ([]InboxEvent, int, error) {
-	return s.inner.PollInbox(input)
+	return s.pollDurableInbox(input)
 }
 
 func (s *SQLiteStore) Ack(input AckInput) error {
-	err := s.inner.Ack(input)
-	if err != nil {
-		return err
-	}
-	messageID := strings.TrimSpace(input.MessageID)
-	if perr := s.persistMessageState(messageID); perr != nil {
-		return perr
-	}
-	return nil
+	return s.inner.ack(input, s.persistAck)
 }
 
 func (s *SQLiteStore) PostEvent(input EventInput) error {
-	err := s.inner.PostEvent(input)
-	if err != nil {
-		return err
-	}
-	messageID := strings.TrimSpace(input.MessageID)
-	if perr := s.persistMessageState(messageID); perr != nil {
-		return perr
-	}
-	return nil
+	return s.inner.postEvent(input, s.persistAck)
 }
 
 func (s *SQLiteStore) Inject(input InjectInput) (*Message, error) {
-	m, err := s.inner.Inject(input)
-	if err != nil {
-		return nil, err
-	}
-	if perr := s.persistAfterSend(m); perr != nil {
-		return nil, perr
-	}
-	return m, nil
+	return s.inner.inject(input, s.persistAcceptance)
 }
 
 func (s *SQLiteStore) ListConversationMessages(input ListConversationMessagesInput) (string, []Message, int, error) {
@@ -856,16 +885,44 @@ func (s *SQLiteStore) ObserveSince(afterID int64, filter ObserveFilter, wait tim
 	return s.inner.ObserveSince(afterID, filter, wait)
 }
 
+func (s *SQLiteStore) ObserveEpoch() string {
+	return s.inner.ObserveEpoch()
+}
+
 func (s *SQLiteStore) Health() map[string]any {
-	return s.inner.Health()
+	out := s.inner.Health()
+	pending, failed := s.deliveryCounts()
+	out["pending_deliveries"] = pending
+	out["failed_deliveries"] = failed
+	s.mu.Lock()
+	persistErrors := len(s.deliveryPersistErrors)
+	s.mu.Unlock()
+	if persistErrors > 0 {
+		out["ok"] = false
+		out["status"] = "degraded"
+		out["delivery_persistence_error"] = true
+	}
+	return out
 }
 
 func (s *SQLiteStore) Metrics() string {
-	return s.inner.Metrics()
+	pending, failed := s.deliveryCounts()
+	return s.inner.Metrics() + fmt.Sprintf(
+		"# HELP agent_bus_pending_deliveries Durable deliveries awaiting transport receipt.\n"+
+			"# TYPE agent_bus_pending_deliveries gauge\n"+
+			"agent_bus_pending_deliveries %d\n"+
+			"# HELP agent_bus_failed_deliveries Durable deliveries that reached their transport deadline.\n"+
+			"# TYPE agent_bus_failed_deliveries gauge\n"+
+			"agent_bus_failed_deliveries %d\n",
+		pending, failed)
 }
 
 func (s *SQLiteStore) SystemStatus() map[string]any {
-	return s.inner.SystemStatus()
+	out := s.inner.SystemStatus()
+	pending, failed := s.deliveryCounts()
+	out["pending_deliveries"] = pending
+	out["failed_deliveries"] = failed
+	return out
 }
 
 func (s *SQLiteStore) GetMessageForTest(messageID string) (Message, bool) {
@@ -875,3 +932,4 @@ func (s *SQLiteStore) GetMessageForTest(messageID string) (Message, bool) {
 // Ensure SQLiteStore satisfies the API interfaces at compile time.
 var _ API = (*SQLiteStore)(nil)
 var _ AgentSecretStore = (*SQLiteStore)(nil)
+var _ ObserveEpochProvider = (*SQLiteStore)(nil)

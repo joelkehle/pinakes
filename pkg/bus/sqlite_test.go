@@ -273,6 +273,13 @@ func TestSQLiteAckPersists(t *testing.T) {
 	if restored.State != StateExecuting {
 		t.Fatalf("expected executing state after ack persist, got %s", restored.State)
 	}
+	events, _, err := s2.PollInbox(PollInboxInput{AgentID: "ucla.b"})
+	if err != nil {
+		t.Fatalf("poll after accepted ack: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("accepted request redelivered after restart: %#v", events)
+	}
 }
 
 func TestSQLiteEventFinalPersists(t *testing.T) {

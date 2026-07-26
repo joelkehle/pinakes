@@ -8,7 +8,7 @@ read_when:
 
 # Bus HTTP Contract
 
-Last updated: 2026-06-10
+Last updated: 2026-07-25
 
 Purpose: preserve the extracted bus surface in `pinakes`.
 
@@ -67,11 +67,25 @@ This doc describes the extracted bus contract as implemented by:
   - body: `to`, `from`, `conversation_id`, `request_id`, `type`, `body`, `meta`, `attachments`, `ttl`, `in_reply_to`
   - auth: `X-Bus-Signature` over raw JSON body using sender secret
   - response: `ok`, `message_id`, `duplicate`
+  - SQLite acceptance commits the message, conversation link, target delivery,
+    duplicate receipt, and counters before returning success
+  - retries of `(from, to, request_id)` within the 24-hour idempotency window
+    return the original `message_id` with `duplicate: true`, including after
+    restart or message-retention pruning
 - `GET /v1/inbox`
   - source: `handleInbox`
   - query: `agent_id`, `cursor`, `wait`
   - auth: `X-Bus-Signature` over raw query string using target agent secret
   - response: `events`, `cursor`
+  - delivery is at-least-once; clients deduplicate by `message_id`
+  - each response is bounded by `MaxInboxEventsPerAgent` and
+    the SQLite response byte ceiling; durable rows beyond the batch remain
+    pending. A single legacy/imported event larger than the byte ceiling is
+    returned alone so its cursor can advance; normally `MaxBodyBytes` keeps an
+    accepted event below the ceiling.
+  - the returned cursor covers only the events included in that response
+  - polling later with cursor `C` durably records every delivery sequence below
+    `C` as received before the next response is returned
 - `POST /v1/acks`
   - source: `handleAcks`
   - body: `agent_id`, `message_id`, `status`, `reason`
@@ -90,6 +104,8 @@ This doc describes the extracted bus contract as implemented by:
   - auth: signature over raw JSON body using actor agent secret
   - allowed event types: `progress`, `final`, `error`
   - response: `ok`
+  - any accepted event proves transport receipt; SQLite commits the lifecycle
+    transition and delivery receipt together before publishing observer events
 
 ### Observation / manual injection
 
@@ -98,12 +114,18 @@ This doc describes the extracted bus contract as implemented by:
   - query: optional `cursor`, `conversation_id`, `agent_id`
   - auth: `Authorization: Bearer <token>` from `OBSERVE_TOKENS`, or `?token=<token>` from `OBSERVE_TOKENS` as an SSE fallback, or `X-Agent-ID` + `X-Bus-Signature` over the exact raw query string
   - header fallback for cursor: `Last-Event-ID`
+  - response header: `X-Pinakes-Observe-Epoch`, a process-local stream identity
+    that changes on restart
   - response: SSE stream
+  - observer events and cursors are transient; clients that see a new epoch
+    reconnect to the live stream and use durable message/domain APIs for history
 - `POST /v1/inject`
   - source: `handleInject`
   - body: `identity`, `conversation_id`, `to`, `body`
   - auth: `Authorization: Bearer <token>` from `INJECT_TOKENS`, then `HUMAN_ALLOWLIST` if configured
   - response: `ok`, `message_id`
+  - targeted SQLite injections use the same commit-before-callback delivery
+    barrier as ordinary direct messages
 
 ### Health / status
 
@@ -125,6 +147,8 @@ This doc describes the extracted bus contract as implemented by:
     - `observe`
     - `push.successes`
     - `push.failures`
+    - `pending_deliveries`
+    - `failed_deliveries`
 - `GET /v1/system/status`
   - source: `handleSystemStatus`
   - response shape:
@@ -136,6 +160,8 @@ This doc describes the extracted bus contract as implemented by:
     - `system.observe_events`
     - `system.push_successes`
     - `system.push_failures`
+    - `pending_deliveries`
+    - `failed_deliveries`
 
 ## Auth Rules
 
@@ -248,7 +274,8 @@ This doc describes the extracted bus contract as implemented by:
   - default: `86400` (24h); `-1` disables
 - `MAX_INBOX_BYTES_PER_AGENT`
   - approximate retained payload byte budget per agent inbox; oldest events evicted first, newest always kept
-  - default: `33554432` (32 MiB); `-1` disables
+  - default: `33554432` (32 MiB); `-1` disables in-memory projection eviction
+    but not the independent 32 MiB SQLite response safety ceiling
 - `MAX_OBSERVE_BYTES`
   - approximate retained payload byte budget for the observe event ring; oldest events evicted first, newest always kept
   - default: `67108864` (64 MiB); `-1` disables
@@ -264,8 +291,11 @@ This doc describes the extracted bus contract as implemented by:
 ### Migration from the JSON backend
 
 - Runs once at startup when all three hold: the resolved backend is SQLite, the SQLite db file does not exist yet, and the legacy `STATE_FILE` exists.
-- Imports agents (with registration metadata and secrets), conversations, messages (including terminal/lifecycle timestamps), conversation message ordering, and id counters.
-- Inbox buffers, observe events, and idempotency entries are transient and dropped once at migration: undelivered inbox events are lost, and affected in-flight requests will ack-timeout to `error`.
+- Imports agents (with registration metadata and secrets), conversations,
+  messages (including lifecycle timestamps), conversation ordering, pending
+  direct deliveries, pull cursors, duplicate receipts, and id counters.
+- Observer events are intentionally dropped because their cursors are valid
+  only within one process epoch.
 - On success the state file is renamed to `state.json.migrated` and kept as a backup; it is never deleted.
 - The import writes into `<db>.tmp` and atomically renames it to the final db path only after the import transaction commits, so the final db file is never partially written. On any import error the bus fails startup loudly instead of booting an empty store; temp artifacts are removed (on error immediately, on crash at the next boot) so the next boot retries the migration.
 
@@ -282,9 +312,16 @@ These values are currently hard-coded in [main.go](/home/joelkehle/Projects/shar
 - `DefaultRegistrationTTL = 60s`
 - `PushMaxAttempts = 3`
 - `PushBaseBackoff = 500ms`
-- `PushQueueSize = 256` — capacity of the bounded push-callback queue drained by the worker pool; when full, new push deliveries are dropped (logged, counted in `push_failures`) instead of blocking the API path or spawning unbounded goroutines.
+- `PushQueueSize = 256` — capacity of the bounded push-callback queue drained by
+  the worker pool; when full, the durable delivery is delayed and rescheduled
+  instead of being deleted or spawning unbounded goroutines.
 - `PushWorkers = 4` — fixed pool of worker goroutines draining the push queue.
+- `PushShutdownTimeout = 15s` — graceful deadline for accepted push callback
+  work to finish and persist its transport receipt before in-flight HTTP
+  requests are canceled and their deliveries are returned to pending.
 - `MaxInboxEventsPerAgent = 10000`
+  - also bounds each SQLite inbox response; all remaining durable rows stay
+    pending for the next cursor
 - `MaxObserveEvents = 50000`
 - `SweepMinInterval = 250ms` — minimum gap between full sweep passes. The bus skips redundant sweeps inside this window so long-poll cycles do not re-walk hundreds of thousands of retained messages on every wake. The first sweep after process start always runs; agent expiry, TTL expiry, and ack-timeout transitions land within one `SweepMinInterval` of their deadline.
 - `MessageRetention = 1h`, `MessageMaxAge = 24h`, `ConversationRetention = 24h`, `AgentRetention = 24h`, `MaxInboxBytesPerAgent = 32MiB`, `MaxObserveBytes = 64MiB`, `MaxBodyBytes = 2MiB` — memory-reclamation knobs, env-overridable (see Environment variables above).
@@ -293,7 +330,11 @@ Important current behavior:
 
 - the non-retention tunables are not externally configurable via env vars today
 - extraction should preserve them unless a deliberate compatibility change is called out
-- on SIGINT/SIGTERM the bus stops accepting connections, waits up to 10s for in-flight requests to drain, then exits 0; long-polling and SSE clients should expect dropped connections at shutdown and retry
+- on SIGINT/SIGTERM the bus stops accepting connections, waits up to 10s for
+  in-flight API requests, then closes the store; store close drains accepted
+  push callback work for up to `PushShutdownTimeout`, durably records completed
+  receipts, and returns interrupted attempts to pending before closing SQLite.
+  Long-polling and SSE clients should expect dropped connections and retry.
 
 ## Retention And Memory Reclamation
 
@@ -304,13 +345,26 @@ The bus is in-memory at runtime; without eviction its memory grows without bound
 - **Conversations** are pruned once idle past `ConversationRetention` with no live messages. `GET /v1/conversations/{id}/messages` only ever returns retained messages.
 - **Expired agents** and their inboxes are pruned `AgentRetention` after registration expiry. A pruned agent simply re-registers (its `registered_at` resets).
 
-Inbox and observe buffers are additionally bounded by byte budgets (`MaxInboxBytesPerAgent`, `MaxObserveBytes`), evicting oldest-first but never the newest event. Counts alone do not bound memory when individual payloads are large.
+In-memory inbox and observe projections are additionally bounded by byte
+budgets (`MaxInboxBytesPerAgent`, `MaxObserveBytes`). SQLite delivery rows,
+not the projection, are authoritative for unreceived direct messages. SQLite
+inbox responses use the inbox count limit and the smaller of a positive
+projection byte budget or an independent 32 MiB safety ceiling. Disabling
+projection byte eviction does not disable this response ceiling. The response
+cursor advances only through the returned batch.
 
 Inbox poll-time reclamation: cursor values originate from prior poll responses, so a poll at cursor `C` proves the agent received every event below `C`; the bus frees those events immediately. Clients must not rely on re-reading inbox events below their last-acknowledged cursor (this was already unreliable under the count cap).
 
-Idempotency caveat: replaying a `request_id` after the original message has been pruned (i.e. more than `MessageRetention` after completion) creates a new message instead of returning the duplicate. The previous behavior held the duplicate for the full 24h `IdempotencyWindow`; retries on that timescale are not a supported pattern.
+Duplicate receipts are retained independently for the full 24-hour
+`IdempotencyWindow`, so shorter message retention does not permit a second
+accepted message for the same `(from, to, request_id)` key.
 
-The SQLite backend mirrors retention into the database: rows past retention are deleted at startup (before load, so a bloated DB cannot re-inflate memory) and every 10 minutes thereafter. The JSON backend rewrites the full pruned state on mutations.
+The SQLite backend mirrors retention into the database: expired deliveries
+become explicit terminal transport failures, expired duplicate receipts are
+removed, and rows past normal retention are deleted at startup and every
+10 minutes thereafter. A message queued for an expired-but-within-grace target
+uses the earlier of its message TTL and registration-grace deadline as its
+transport expiry. The JSON backend rewrites its state on mutations.
 
 ## Passport Extensions
 

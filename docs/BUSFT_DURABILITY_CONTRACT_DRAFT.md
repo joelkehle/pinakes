@@ -3,18 +3,18 @@ summary: "Decision draft for durable at-least-once direct-message delivery, dura
 read_when:
   - Planning or reviewing Pinakes issue #5.
   - Changing SQLite delivery, inbox cursor, idempotency, push retry, restart, restore, or observer-event behavior.
-status: decision-draft
+status: implementation
 ---
 
-# BUSFT Direct-Message Durability Contract Draft
+# BUSFT Direct-Message Durability Contract
 
 - Issue: [#5](https://github.com/joelkehle/pinakes/issues/5)
-- Status: Decision draft; no implementation authorized
+- Status: Accepted; implementation in review
 - Prepared: 2026-07-25
 - Maintainer: Joel Kehle
 - Executor: Unassigned
 
-## Proposed decision
+## Decision
 
 Pinakes should provide durable, at-least-once delivery for direct messages and
 durable duplicate suppression for accepted sends. Observer/SSE events should
@@ -63,7 +63,9 @@ transport conditions is durably recorded:
 - a pull recipient advances its cursor past that delivery;
 - a push recipient returns a successful callback response;
 - a request recipient sends an application acknowledgment, which also proves
-  receipt; or
+  receipt;
+- a request recipient posts `progress`, `final`, or `error`, which likewise
+  proves receipt; or
 - the message expires under the documented TTL/deadline policy.
 
 A restart, crash, restore, or callback-worker restart must not silently discard
@@ -100,6 +102,14 @@ retries.
 Each target has a monotonically increasing delivery sequence. A pull response
 returns a cursor covering the deliveries in that response.
 
+Each response is bounded by the configured event-count limit and a fixed byte
+safety ceiling, lowered further by any smaller positive projection byte budget.
+Disabling in-memory projection eviction does not disable the response ceiling.
+Rows beyond the returned batch remain durable and pending; the returned cursor
+covers only the batch actually returned. A single legacy/imported event larger
+than the byte ceiling is returned alone to preserve cursor progress; normal
+HTTP acceptance constrains individual events with `MaxBodyBytes`.
+
 When the recipient later polls with cursor `C`, Pinakes must durably record that
 all delivery sequences below `C` were received before returning the next
 response. A crash before that cursor advancement may cause replay; a crash
@@ -123,12 +133,15 @@ A push callback:
   terminal transport failure and metric.
 
 A 2xx callback proves receipt only, not successful business execution.
+During shutdown, Pinakes drains accepted callback work through durable receipt
+persistence. If the shutdown deadline expires, it cancels in-flight callbacks
+and returns their durable delivery rows to pending before SQLite closes.
 
 ### 6. Request lifecycle after restart
 
 | Persisted state | Restart behavior |
 | --- | --- |
-| queued for an inactive target | remain queued until registration or deadline |
+| queued for an inactive target | remain queued until registration or the earlier of message TTL and registration-grace deadline |
 | delivered, no application acknowledgment | eligible for same-ID redelivery |
 | `accepted` / executing | do not redeliver the work request; retain its execution deadline |
 | `rejected`, completed, or error | retain terminal state under normal retention |
@@ -199,9 +212,15 @@ Close/reopen and crash-boundary tests must cover:
 8. unreceived response and inform survive restart;
 9. push callback retries survive restart and retain the same IDs;
 10. successful push transport receipt survives restart;
-11. restore from a replicated rehearsal database preserves pending deliveries,
+11. an initial targeted push injection records its receipt without a second
+    callback;
+12. progress, final, and error events without a separate ack record receipt and
+    do not replay;
+13. queued work stops at its registration-grace deadline;
+14. a large durable inbox is returned in bounded cursor-preserving batches;
+15. restore from a replicated rehearsal database preserves pending deliveries,
     cursors, lifecycle state, and duplicate suppression; and
-12. observer events disappear on restart without preventing a fresh observer
+16. observer events disappear on restart without preventing a fresh observer
     connection.
 
 No test may require a consumer to perform a real external write.
@@ -218,9 +237,9 @@ No test may require a consumer to perform a real external write.
 
 ## Decision checklist
 
-- [ ] Approve durable delivery for all three direct-message types.
-- [ ] Approve `(from, to, request_id)` as the durable duplicate key.
-- [ ] Approve transport receipt semantics for pull, push, and application ack.
-- [ ] Approve transient observer events with restart-visible epoch handling.
-- [ ] Choose the supported idempotency window and transport-deadline defaults
-      during implementation planning.
+- [x] Durable delivery for all three direct-message types.
+- [x] `(from, to, request_id)` as the durable duplicate key.
+- [x] Transport receipt semantics for pull, push, and application ack.
+- [x] Transient observer events with restart-visible epoch handling.
+- [x] Preserve the existing 24-hour idempotency window and 10-minute default
+      message transport deadline.
