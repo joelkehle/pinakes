@@ -44,16 +44,16 @@ inventory.
 
 1. The JK and UCLA authorities remain separate. Namespace migration does not
    imply or require consolidation.
-2. Nearly all persisted identities and resources are still unprefixed. One
-   current identity is already explicitly namespaced.
+2. Most persisted identities and resources are still unprefixed. Explicitly
+   namespaced current identities also exist.
 3. The allowlist mixes current identities with explicitly marked compatibility
    aliases. Compatibility entries should not automatically become permanent
    strict-mode identities.
-4. Four identities have registration history on both authorities. Each needs
-   an authority-specific decision instead of an automatic prefix.
-5. One JK registration exists in persisted history but not in the current
-   allowlist. Treat it as a retirement candidate unless an owning consumer
-   demonstrates that it remains required.
+4. Some identities have registration history on both authorities. Each needs an
+   authority-specific decision instead of an automatic prefix.
+5. Persisted history includes registrations absent from the current allowlist.
+   Treat each as a retirement candidate unless an owning consumer demonstrates
+   that it remains required.
 6. No current identity can safely be renamed to `shared.*` merely because its
    implementation is shared. Under the current Pinakes contract, the identity
    prefix determines its one effective scope. A `shared.*` identity does not
@@ -98,7 +98,8 @@ dispositions:
 
 - `migrate`;
 - `unchanged`;
-- `retire-unless-confirmed`; or
+- `retire-unless-confirmed`;
+- `retire-unless-owner-confirms`; or
 - `decision-confirm-or-retire`.
 
 The mapping covers the allowlist snapshot reviewed on 2026-07-25 and fails
