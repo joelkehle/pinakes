@@ -1,18 +1,20 @@
 ---
-summary: "Decision draft for durable at-least-once direct-message delivery, durable duplicate suppression, and transient observer events."
+summary: "Accepted contract for durable at-least-once direct-message delivery, durable duplicate suppression, and transient observer events."
 read_when:
   - Planning or reviewing Pinakes issue #5.
   - Changing SQLite delivery, inbox cursor, idempotency, push retry, restart, restore, or observer-event behavior.
-status: implementation
+status: implementation-in-progress
 ---
 
 # BUSFT Direct-Message Durability Contract
 
 - Issue: [#5](https://github.com/joelkehle/pinakes/issues/5)
-- Status: Accepted; implementation in review
+- Status: Accepted; direct-delivery implementation merged in
+  [PR #18](https://github.com/joelkehle/pinakes/pull/18); replication and restore
+  proof pending
 - Prepared: 2026-07-25
 - Maintainer: Joel Kehle
-- Executor: Unassigned
+- Executor: Codex (direct-delivery implementation); remaining work unassigned
 
 ## Decision
 
@@ -22,6 +24,18 @@ remain transient.
 
 This preserves Pinakes as transport infrastructure. It does not make Pinakes
 the system of record for consumer workflow or business facts.
+
+## Implementation status
+
+PR #18 implemented the local SQLite direct-delivery contract, including atomic
+acceptance, restart-safe pull and push delivery, durable duplicate receipts,
+bounded inbox batches, transport-receipt persistence, migration/backfill, and
+transient observer epochs.
+
+WP2 remains open for replication configuration and an executed restore
+rehearsal that proves pending deliveries, cursors, lifecycle state, and
+duplicate suppression survive recovery. The PR #18 merge did not release or
+deploy Pinakes, configure production replication, or execute a restore.
 
 ## Terms
 
