@@ -8,15 +8,15 @@
       "id": "EC-1",
       "status": "pass",
       "code": ["pkg/bus/store.go", "pkg/bus/sqlite_delivery.go"],
-      "tests": ["pkg/bus/sqlite_atomic_test.go"],
-      "proof": ["pkg/bus/sqlite_atomic_test.go"]
+      "tests": ["pkg/bus/sqlite_atomic_test.go", "pkg/bus/sqlite_review_regression_test.go"],
+      "proof": ["pkg/bus/sqlite_atomic_test.go", "pkg/bus/sqlite_review_regression_test.go"]
     },
     {
       "id": "EC-2",
       "status": "pass",
       "code": ["pkg/bus/sqlite_delivery.go"],
-      "tests": ["pkg/bus/sqlite_delivery_test.go"],
-      "proof": ["pkg/bus/sqlite_delivery_test.go"]
+      "tests": ["pkg/bus/sqlite_delivery_test.go", "pkg/bus/sqlite_review_regression_test.go"],
+      "proof": ["pkg/bus/sqlite_delivery_test.go", "pkg/bus/sqlite_review_regression_test.go"]
     },
     {
       "id": "EC-3",
@@ -29,8 +29,8 @@
       "id": "EC-4",
       "status": "pass",
       "code": ["pkg/bus/store.go", "pkg/bus/sqlite_delivery.go"],
-      "tests": ["pkg/bus/sqlite_delivery_test.go"],
-      "proof": ["pkg/bus/sqlite_delivery_test.go"]
+      "tests": ["pkg/bus/sqlite_delivery_test.go", "pkg/bus/sqlite_review_regression_test.go"],
+      "proof": ["pkg/bus/sqlite_delivery_test.go", "pkg/bus/sqlite_review_regression_test.go"]
     },
     {
       "id": "EC-5",

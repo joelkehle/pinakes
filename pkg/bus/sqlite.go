@@ -677,10 +677,28 @@ func (s *SQLiteStore) saveConversation(c *Conversation) error {
 }
 
 func saveMessageTo(exec sqliteExec, m *Message) error {
-	_, err := exec.Exec(`INSERT OR REPLACE INTO messages (message_id, type, from_agent, to_agent, conversation_id,
+	_, err := exec.Exec(`INSERT INTO messages (message_id, type, from_agent, to_agent, conversation_id,
 		request_id, in_reply_to, body, meta, attachments, state,
 		created_at, terminal_at, delivered_at, last_progress_at, ttl_expires_at, grace_until, queued_for_agent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(message_id) DO UPDATE SET
+			type = excluded.type,
+			from_agent = excluded.from_agent,
+			to_agent = excluded.to_agent,
+			conversation_id = excluded.conversation_id,
+			request_id = excluded.request_id,
+			in_reply_to = excluded.in_reply_to,
+			body = excluded.body,
+			meta = excluded.meta,
+			attachments = excluded.attachments,
+			state = excluded.state,
+			created_at = excluded.created_at,
+			terminal_at = excluded.terminal_at,
+			delivered_at = excluded.delivered_at,
+			last_progress_at = excluded.last_progress_at,
+			ttl_expires_at = excluded.ttl_expires_at,
+			grace_until = excluded.grace_until,
+			queued_for_agent = excluded.queued_for_agent`,
 		m.MessageID,
 		string(m.Type),
 		m.From,
@@ -732,107 +750,6 @@ func (s *SQLiteStore) saveCounters() error {
 	nextMsg := s.inner.nextMessageID
 	s.inner.mu.Unlock()
 	return saveCountersTo(s.db, nextConv, nextMsg)
-}
-
-// persistAfterSend persists the message row, its parent conversation, the
-// conversation_messages position link, and the counter advance from a single
-// SendMessage call. All four writes go through one SQL transaction so that a
-// crash mid-persist cannot leave a counter advanced past an unwritten row, a
-// message without its conversation, or a conversation without its position
-// link. Pre-v0.2.2 these were four separate auto-commit Execs, which produced
-// the conversation-count drift observed on bus bounce.
-func (s *SQLiteStore) persistAfterSend(m *Message) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.inner.mu.Lock()
-	var convCopy *Conversation
-	if c := s.inner.conversations[m.ConversationID]; c != nil {
-		cp := *c
-		convCopy = &cp
-	}
-	convMsgs := s.inner.conversationMessages[m.ConversationID]
-	nextConv := s.inner.nextConversationID
-	nextMsg := s.inner.nextMessageID
-	s.inner.mu.Unlock()
-
-	tx, err := s.db.Beginx()
-	if err != nil {
-		return err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if convCopy != nil {
-		if err := saveConversationTo(tx, convCopy); err != nil {
-			return err
-		}
-	}
-	if err := saveMessageTo(tx, m); err != nil {
-		return err
-	}
-	position := len(convMsgs) - 1
-	if err := saveConversationMessageTo(tx, m.ConversationID, m.MessageID, position); err != nil {
-		return err
-	}
-	if err := saveCountersTo(tx, nextConv, nextMsg); err != nil {
-		return err
-	}
-	if strings.TrimSpace(m.To) != "" {
-		if _, err := tx.Exec(`INSERT INTO delivery_cursors
-			(target_agent_id, next_seq, acknowledged_cursor) VALUES (?, 0, 0)
-			ON CONFLICT(target_agent_id) DO NOTHING`, m.To); err != nil {
-			return err
-		}
-		var deliverySeq int
-		if err := tx.Get(&deliverySeq, `SELECT next_seq FROM delivery_cursors
-			WHERE target_agent_id = ?`, m.To); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`INSERT INTO deliveries
-			(target_agent_id, delivery_seq, message_id, status, next_attempt_at,
-			 attempt_count, received_at, expires_at, last_error)
-			VALUES (?, ?, ?, 'pending', ?, 0, '', ?, '')`,
-			m.To, deliverySeq, m.MessageID, timeToString(m.CreatedAt),
-			timeToString(m.TTLExpiresAt)); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE delivery_cursors SET next_seq = ?
-			WHERE target_agent_id = ?`, deliverySeq+1, m.To); err != nil {
-			return err
-		}
-	}
-	if hook := s.testHookBeforeCommit; hook != nil {
-		if err := hook(); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	committed = true
-	return nil
-}
-
-// persistMessageState saves just the message row (state change after ack/event).
-func (s *SQLiteStore) persistMessageState(messageID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.inner.mu.Lock()
-	m, ok := s.inner.messages[messageID]
-	if !ok {
-		s.inner.mu.Unlock()
-		return nil
-	}
-	cp := *m
-	s.inner.mu.Unlock()
-
-	return s.saveMessage(&cp)
 }
 
 // --- bus.API implementation ---
@@ -899,13 +816,13 @@ func (s *SQLiteStore) CreateConversation(input CreateConversationInput) (*Conver
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.inner.mu.Lock()
 	nextConv := s.inner.nextConversationID
 	nextMsg := s.inner.nextMessageID
 	s.inner.mu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	tx, err := s.db.Beginx()
 	if err != nil {
@@ -953,26 +870,11 @@ func (s *SQLiteStore) Ack(input AckInput) error {
 }
 
 func (s *SQLiteStore) PostEvent(input EventInput) error {
-	err := s.inner.PostEvent(input)
-	if err != nil {
-		return err
-	}
-	messageID := strings.TrimSpace(input.MessageID)
-	if perr := s.persistMessageState(messageID); perr != nil {
-		return perr
-	}
-	return nil
+	return s.inner.postEvent(input, s.persistAck)
 }
 
 func (s *SQLiteStore) Inject(input InjectInput) (*Message, error) {
-	m, err := s.inner.Inject(input)
-	if err != nil {
-		return nil, err
-	}
-	if perr := s.persistAfterSend(m); perr != nil {
-		return nil, perr
-	}
-	return m, nil
+	return s.inner.inject(input, s.persistAcceptance)
 }
 
 func (s *SQLiteStore) ListConversationMessages(input ListConversationMessagesInput) (string, []Message, int, error) {

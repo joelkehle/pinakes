@@ -203,6 +203,9 @@ func importStateToSQLite(state persistentState, dbPath string, cfg Config) (migr
 			if expiresAt.IsZero() {
 				expiresAt = message.CreatedAt.Add(defaultTTL)
 			}
+			if !message.GraceUntil.IsZero() && message.GraceUntil.Before(expiresAt) {
+				expiresAt = message.GraceUntil
+			}
 			if _, err := tx.Exec(`INSERT INTO deliveries
 				(target_agent_id, delivery_seq, message_id, status, next_attempt_at,
 				 attempt_count, received_at, expires_at, last_error)

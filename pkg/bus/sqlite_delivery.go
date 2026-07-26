@@ -13,6 +13,20 @@ type claimedPush struct {
 
 const durableDeliveryBackfill = "durable-delivery-v1"
 
+const (
+	durableInboxFallbackMaxEvents = 10_000
+	durableInboxFallbackMaxBytes  = 32 << 20
+)
+
+func deliveryExpiry(message Message) time.Time {
+	expiresAt := message.TTLExpiresAt
+	if !message.GraceUntil.IsZero() &&
+		(expiresAt.IsZero() || message.GraceUntil.Before(expiresAt)) {
+		expiresAt = message.GraceUntil
+	}
+	return expiresAt
+}
+
 // backfillLegacyDeliveryState upgrades pre-durability SQLite databases exactly
 // once. Old SQLite retained messages but not inboxes or idempotency, so the
 // safest reconstructable boundary is: unexpired unacknowledged requests plus
@@ -45,7 +59,7 @@ func (s *SQLiteStore) backfillLegacyDeliveryState() error {
 	}
 
 	now := s.inner.now()
-	rows, err := tx.Query(`SELECT message_id, to_agent, created_at, ttl_expires_at
+	rows, err := tx.Query(`SELECT message_id, to_agent, created_at, ttl_expires_at, grace_until
 		FROM messages
 		WHERE to_agent <> ''
 		  AND (
@@ -58,15 +72,16 @@ func (s *SQLiteStore) backfillLegacyDeliveryState() error {
 		return err
 	}
 	type legacyDelivery struct {
-		messageID string
-		target    string
-		createdAt string
-		expiresAt string
+		messageID  string
+		target     string
+		createdAt  string
+		expiresAt  string
+		graceUntil string
 	}
 	var pending []legacyDelivery
 	for rows.Next() {
 		var item legacyDelivery
-		if err := rows.Scan(&item.messageID, &item.target, &item.createdAt, &item.expiresAt); err != nil {
+		if err := rows.Scan(&item.messageID, &item.target, &item.createdAt, &item.expiresAt, &item.graceUntil); err != nil {
 			_ = rows.Close()
 			return err
 		}
@@ -89,6 +104,15 @@ func (s *SQLiteStore) backfillLegacyDeliveryState() error {
 		} else if _, err := tx.Exec(`UPDATE messages SET ttl_expires_at = ?
 			WHERE message_id = ?`, timeToString(expiresAt), item.messageID); err != nil {
 			return err
+		}
+		if item.graceUntil != "" {
+			graceUntil, err := parseSQLiteTime(item.graceUntil)
+			if err != nil {
+				return err
+			}
+			if graceUntil.Before(expiresAt) {
+				expiresAt = graceUntil
+			}
 		}
 		if !expiresAt.After(now) {
 			continue
@@ -198,47 +222,51 @@ func (s *SQLiteStore) persistAcceptance(a *sendAcceptance) error {
 		return err
 	}
 
-	if _, err := tx.Exec(`INSERT INTO delivery_cursors
-		(target_agent_id, next_seq, acknowledged_cursor) VALUES (?, 0, 0)
-		ON CONFLICT(target_agent_id) DO NOTHING`, a.message.To); err != nil {
-		return err
+	if a.message.To != "" {
+		if _, err := tx.Exec(`INSERT INTO delivery_cursors
+			(target_agent_id, next_seq, acknowledged_cursor) VALUES (?, 0, 0)
+			ON CONFLICT(target_agent_id) DO NOTHING`, a.message.To); err != nil {
+			return err
+		}
+		var deliverySeq int
+		if err := tx.Get(&deliverySeq, `SELECT next_seq FROM delivery_cursors WHERE target_agent_id = ?`, a.message.To); err != nil {
+			return err
+		}
+		deliveryStatus := "pending"
+		if a.pushURL != "" {
+			deliveryStatus = "attempting"
+		}
+		if _, err := tx.Exec(`INSERT INTO deliveries
+			(target_agent_id, delivery_seq, message_id, status, next_attempt_at,
+			 attempt_count, received_at, expires_at, last_error)
+			VALUES (?, ?, ?, ?, ?, 0, '', ?, '')`,
+			a.message.To,
+			deliverySeq,
+			a.message.MessageID,
+			deliveryStatus,
+			timeToString(a.message.CreatedAt),
+			timeToString(deliveryExpiry(a.message)),
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE delivery_cursors SET next_seq = ?
+			WHERE target_agent_id = ?`, deliverySeq+1, a.message.To); err != nil {
+			return err
+		}
 	}
-	var deliverySeq int
-	if err := tx.Get(&deliverySeq, `SELECT next_seq FROM delivery_cursors WHERE target_agent_id = ?`, a.message.To); err != nil {
-		return err
-	}
-	deliveryStatus := "pending"
-	if a.pushURL != "" {
-		deliveryStatus = "attempting"
-	}
-	if _, err := tx.Exec(`INSERT INTO deliveries
-		(target_agent_id, delivery_seq, message_id, status, next_attempt_at,
-		 attempt_count, received_at, expires_at, last_error)
-		VALUES (?, ?, ?, ?, ?, 0, '', ?, '')`,
-		a.message.To,
-		deliverySeq,
-		a.message.MessageID,
-		deliveryStatus,
-		timeToString(a.message.CreatedAt),
-		timeToString(a.message.TTLExpiresAt),
-	); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE delivery_cursors SET next_seq = ?
-		WHERE target_agent_id = ?`, deliverySeq+1, a.message.To); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT INTO idempotency
-		(from_agent, to_agent, request_id, message_id, accepted_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		a.message.From,
-		a.message.To,
-		a.message.RequestID,
-		a.message.MessageID,
-		timeToString(a.idempotency.CreatedAt),
-		timeToString(a.idempotency.CreatedAt.Add(s.inner.cfg.IdempotencyWindow)),
-	); err != nil {
-		return err
+	if a.idempotencyKey != "" {
+		if _, err := tx.Exec(`INSERT INTO idempotency
+			(from_agent, to_agent, request_id, message_id, accepted_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			a.message.From,
+			a.message.To,
+			a.message.RequestID,
+			a.message.MessageID,
+			timeToString(a.idempotency.CreatedAt),
+			timeToString(a.idempotency.CreatedAt.Add(s.inner.cfg.IdempotencyWindow)),
+		); err != nil {
+			return err
+		}
 	}
 
 	if hook := s.testHookBeforeCommit; hook != nil {
@@ -375,9 +403,9 @@ func (s *SQLiteStore) claimDuePushes() []claimedPush {
 			_, _ = s.db.Exec(`UPDATE messages
 				SET queued_for_agent = 0,
 				    state = CASE WHEN type = 'request' AND state = 'pending'
-				                 THEN 'waiting_ack' ELSE state END,
+				                 THEN ? ELSE state END,
 				    delivered_at = CASE WHEN delivered_at = '' THEN ? ELSE delivered_at END
-				WHERE message_id = ?`, now, claimed.messageID)
+				WHERE message_id = ?`, string(StateWaitingAck), now, claimed.messageID)
 			out = append(out, claimed)
 		}
 	}
@@ -504,6 +532,31 @@ type sequencedMessage struct {
 	message Message
 }
 
+func (s *SQLiteStore) durableInboxBatchLimits() (int, int) {
+	maxEvents := s.inner.cfg.MaxInboxEventsPerAgent
+	if maxEvents <= 0 {
+		maxEvents = durableInboxFallbackMaxEvents
+	}
+	maxBytes := s.inner.cfg.MaxInboxBytesPerAgent
+	if maxBytes <= 0 {
+		maxBytes = durableInboxFallbackMaxBytes
+	}
+	return maxEvents, maxBytes
+}
+
+func messageInboxEvent(message Message) InboxEvent {
+	return InboxEvent{
+		MessageID:      message.MessageID,
+		Type:           message.Type,
+		From:           message.From,
+		ConversationID: message.ConversationID,
+		Body:           message.Body,
+		Meta:           message.Meta,
+		Attachments:    append([]Attachment{}, message.Attachments...),
+		CreatedAt:      message.CreatedAt,
+	}
+}
+
 func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]InboxEvent, int, error) {
 	s.mu.Lock()
 	tx, err := s.db.Beginx()
@@ -555,6 +608,7 @@ func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]I
 		}
 	}
 
+	maxEvents, maxBytes := s.durableInboxBatchLimits()
 	rows, err := tx.Query(`SELECT d.delivery_seq,
 			m.message_id, m.type, m.from_agent, m.to_agent, m.conversation_id,
 			m.request_id, m.in_reply_to, m.body, m.meta, m.attachments, m.state,
@@ -564,12 +618,14 @@ func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]I
 		JOIN messages m ON m.message_id = d.message_id
 		WHERE d.target_agent_id = ? AND d.delivery_seq >= ?
 		  AND d.status IN ('pending', 'attempting') AND d.expires_at > ?
-		ORDER BY d.delivery_seq`,
-		agentID, cursor, timeToString(s.inner.now()))
+		ORDER BY d.delivery_seq
+		LIMIT ?`,
+		agentID, cursor, timeToString(s.inner.now()), maxEvents)
 	if err != nil {
 		return nil, 0, err
 	}
 	var pending []sequencedMessage
+	batchBytes := 0
 	for rows.Next() {
 		var item sequencedMessage
 		message, err := scanSQLiteMessage(rows, &item.seq)
@@ -578,6 +634,11 @@ func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]I
 			return nil, 0, err
 		}
 		item.message = message
+		eventBytes := inboxEventSize(messageInboxEvent(message))
+		if len(pending) > 0 && batchBytes+eventBytes > maxBytes {
+			break
+		}
+		batchBytes += eventBytes
 		pending = append(pending, item)
 	}
 	if err := rows.Close(); err != nil {
@@ -589,9 +650,9 @@ func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]I
 		if _, err := tx.Exec(`UPDATE messages
 			SET queued_for_agent = 0,
 			    state = CASE WHEN type = 'request' AND state = 'pending'
-			                 THEN 'waiting_ack' ELSE state END,
+			                 THEN ? ELSE state END,
 			    delivered_at = CASE WHEN delivered_at = '' THEN ? ELSE delivered_at END
-			WHERE message_id = ?`, offeredAt, item.message.MessageID); err != nil {
+			WHERE message_id = ?`, string(StateWaitingAck), offeredAt, item.message.MessageID); err != nil {
 			return nil, 0, err
 		}
 		pending[i].message.QueuedForAgent = false
@@ -628,17 +689,7 @@ func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]I
 	s.inner.mu.Unlock()
 	events := make([]InboxEvent, 0, len(pending))
 	for _, item := range pending {
-		m := item.message
-		events = append(events, InboxEvent{
-			MessageID:      m.MessageID,
-			Type:           m.Type,
-			From:           m.From,
-			ConversationID: m.ConversationID,
-			Body:           m.Body,
-			Meta:           m.Meta,
-			Attachments:    append([]Attachment{}, m.Attachments...),
-			CreatedAt:      m.CreatedAt,
-		})
+		events = append(events, messageInboxEvent(item.message))
 	}
 	return events, next, nil
 }

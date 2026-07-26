@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// TestSQLitePersistAfterSendIsAtomic is the regression for the conversation-
+// TestSQLiteAcceptanceIsAtomic is the regression for the conversation-
 // count drift observed when bouncing v0.2.1 buses: SendMessage's SQLite
 // persistence used four separate auto-commit Execs (conversation, message,
 // conversation_messages, counters). A crash mid-persist could leave a
@@ -15,7 +15,7 @@ import (
 // message link. v0.2.2 wraps all four writes in a single transaction. This
 // test injects a failure between the last write and Commit; afterward it
 // reopens the store and asserts that none of the four rows leaked through.
-func TestSQLitePersistAfterSendIsAtomic(t *testing.T) {
+func TestSQLiteAcceptanceIsAtomic(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "atomic.db")
 	now := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
@@ -41,7 +41,7 @@ func TestSQLitePersistAfterSendIsAtomic(t *testing.T) {
 		t.Fatalf("register b: %v", err)
 	}
 
-	// Force a failure inside persistAfterSend's transaction. The hook fires
+	// Force a failure inside the acceptance transaction. The hook fires
 	// after all four save* writes but before Commit, mirroring a crash that
 	// would have left partial rows behind under the v0.2.1 implementation.
 	injected := errors.New("injected persist failure")

@@ -78,6 +78,9 @@ This doc describes the extracted bus contract as implemented by:
   - auth: `X-Bus-Signature` over raw query string using target agent secret
   - response: `events`, `cursor`
   - delivery is at-least-once; clients deduplicate by `message_id`
+  - each response is bounded by `MaxInboxEventsPerAgent` and
+    `MaxInboxBytesPerAgent`; durable rows beyond the batch remain pending
+  - the returned cursor covers only the events included in that response
   - polling later with cursor `C` durably records every delivery sequence below
     `C` as received before the next response is returned
 - `POST /v1/acks`
@@ -98,6 +101,8 @@ This doc describes the extracted bus contract as implemented by:
   - auth: signature over raw JSON body using actor agent secret
   - allowed event types: `progress`, `final`, `error`
   - response: `ok`
+  - any accepted event proves transport receipt; SQLite commits the lifecycle
+    transition and delivery receipt together before publishing observer events
 
 ### Observation / manual injection
 
@@ -116,6 +121,8 @@ This doc describes the extracted bus contract as implemented by:
   - body: `identity`, `conversation_id`, `to`, `body`
   - auth: `Authorization: Bearer <token>` from `INJECT_TOKENS`, then `HUMAN_ALLOWLIST` if configured
   - response: `ok`, `message_id`
+  - targeted SQLite injections use the same commit-before-callback delivery
+    barrier as ordinary direct messages
 
 ### Health / status
 
@@ -309,6 +316,8 @@ These values are currently hard-coded in [main.go](/home/joelkehle/Projects/shar
   work to finish and persist its transport receipt before in-flight HTTP
   requests are canceled and their deliveries are returned to pending.
 - `MaxInboxEventsPerAgent = 10000`
+  - also bounds each SQLite inbox response; all remaining durable rows stay
+    pending for the next cursor
 - `MaxObserveEvents = 50000`
 - `SweepMinInterval = 250ms` — minimum gap between full sweep passes. The bus skips redundant sweeps inside this window so long-poll cycles do not re-walk hundreds of thousands of retained messages on every wake. The first sweep after process start always runs; agent expiry, TTL expiry, and ack-timeout transitions land within one `SweepMinInterval` of their deadline.
 - `MessageRetention = 1h`, `MessageMaxAge = 24h`, `ConversationRetention = 24h`, `AgentRetention = 24h`, `MaxInboxBytesPerAgent = 32MiB`, `MaxObserveBytes = 64MiB`, `MaxBodyBytes = 2MiB` — memory-reclamation knobs, env-overridable (see Environment variables above).
@@ -334,7 +343,9 @@ The bus is in-memory at runtime; without eviction its memory grows without bound
 
 In-memory inbox and observe projections are additionally bounded by byte
 budgets (`MaxInboxBytesPerAgent`, `MaxObserveBytes`). SQLite delivery rows,
-not the projection, are authoritative for unreceived direct messages.
+not the projection, are authoritative for unreceived direct messages. SQLite
+inbox responses use the inbox count and byte budgets as per-poll batch limits;
+the response cursor advances only through the returned batch.
 
 Inbox poll-time reclamation: cursor values originate from prior poll responses, so a poll at cursor `C` proves the agent received every event below `C`; the bus frees those events immediately. Clients must not rely on re-reading inbox events below their last-acknowledged cursor (this was already unreliable under the count cap).
 
@@ -345,7 +356,9 @@ accepted message for the same `(from, to, request_id)` key.
 The SQLite backend mirrors retention into the database: expired deliveries
 become explicit terminal transport failures, expired duplicate receipts are
 removed, and rows past normal retention are deleted at startup and every
-10 minutes thereafter. The JSON backend rewrites its state on mutations.
+10 minutes thereafter. A message queued for an expired-but-within-grace target
+uses the earlier of its message TTL and registration-grace deadline as its
+transport expiry. The JSON backend rewrites its state on mutations.
 
 ## Passport Extensions
 

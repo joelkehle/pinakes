@@ -63,7 +63,9 @@ transport conditions is durably recorded:
 - a pull recipient advances its cursor past that delivery;
 - a push recipient returns a successful callback response;
 - a request recipient sends an application acknowledgment, which also proves
-  receipt; or
+  receipt;
+- a request recipient posts `progress`, `final`, or `error`, which likewise
+  proves receipt; or
 - the message expires under the documented TTL/deadline policy.
 
 A restart, crash, restore, or callback-worker restart must not silently discard
@@ -100,6 +102,10 @@ retries.
 Each target has a monotonically increasing delivery sequence. A pull response
 returns a cursor covering the deliveries in that response.
 
+Each response is bounded by configured event-count and byte limits. Rows beyond
+the returned batch remain durable and pending; the returned cursor covers only
+the batch actually returned.
+
 When the recipient later polls with cursor `C`, Pinakes must durably record that
 all delivery sequences below `C` were received before returning the next
 response. A crash before that cursor advancement may cause replay; a crash
@@ -131,7 +137,7 @@ and returns their durable delivery rows to pending before SQLite closes.
 
 | Persisted state | Restart behavior |
 | --- | --- |
-| queued for an inactive target | remain queued until registration or deadline |
+| queued for an inactive target | remain queued until registration or the earlier of message TTL and registration-grace deadline |
 | delivered, no application acknowledgment | eligible for same-ID redelivery |
 | `accepted` / executing | do not redeliver the work request; retain its execution deadline |
 | `rejected`, completed, or error | retain terminal state under normal retention |
@@ -202,9 +208,15 @@ Close/reopen and crash-boundary tests must cover:
 8. unreceived response and inform survive restart;
 9. push callback retries survive restart and retain the same IDs;
 10. successful push transport receipt survives restart;
-11. restore from a replicated rehearsal database preserves pending deliveries,
+11. an initial targeted push injection records its receipt without a second
+    callback;
+12. progress, final, and error events without a separate ack record receipt and
+    do not replay;
+13. queued work stops at its registration-grace deadline;
+14. a large durable inbox is returned in bounded cursor-preserving batches;
+15. restore from a replicated rehearsal database preserves pending deliveries,
     cursors, lifecycle state, and duplicate suppression; and
-12. observer events disappear on restart without preventing a fresh observer
+16. observer events disappear on restart without preventing a fresh observer
     connection.
 
 No test may require a consumer to perform a real external write.

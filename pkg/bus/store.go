@@ -1590,6 +1590,14 @@ func (s *Store) ack(input AckInput, commit func(*Message) error) error {
 }
 
 func (s *Store) PostEvent(input EventInput) error {
+	return s.postEvent(input, nil)
+}
+
+// postEvent accepts an optional durability barrier. Posting progress or a
+// terminal result proves that the recipient received the request, so durable
+// backends commit the lifecycle transition and transport receipt together
+// before publishing observer events.
+func (s *Store) postEvent(input EventInput, commit func(*Message) error) error {
 	now := s.now()
 	actor := strings.TrimSpace(input.ActorAgentID)
 	messageID := strings.TrimSpace(input.MessageID)
@@ -1620,9 +1628,15 @@ func (s *Store) PostEvent(input EventInput) error {
 		return newError(CodeValidation, "events only apply to request messages", false, 0)
 	}
 	if isTerminal(m.State) {
+		if commit != nil {
+			next := *m
+			return commit(&next)
+		}
 		return nil
 	}
 
+	next := *m
+	from := m.State
 	switch typeRaw {
 	case "progress":
 		if !m.LastProgressAt.IsZero() {
@@ -1631,9 +1645,27 @@ func (s *Store) PostEvent(input EventInput) error {
 				return newError(CodeRateLimited, "progress event too frequent", true, s.cfg.ProgressMinInterval-elapsed)
 			}
 		}
-		if m.State == StateWaitingAck {
-			from := m.State
-			m.State = StateExecuting
+		if next.State == StateWaitingAck {
+			next.State = StateExecuting
+		}
+		next.LastProgressAt = now
+	case "final":
+		next.State = StateCompleted
+		next.TerminalAt = now
+	case "error":
+		next.State = StateError
+		next.TerminalAt = now
+	}
+
+	if commit != nil {
+		if err := commit(&next); err != nil {
+			return err
+		}
+	}
+	*m = next
+
+	if typeRaw == "progress" {
+		if from != m.State {
 			s.publishLocked(
 				ObserveStateChange,
 				map[string]any{
@@ -1647,7 +1679,6 @@ func (s *Store) PostEvent(input EventInput) error {
 				now,
 			)
 		}
-		m.LastProgressAt = now
 		s.publishLocked(
 			ObserveProgress,
 			map[string]any{
@@ -1660,28 +1691,7 @@ func (s *Store) PostEvent(input EventInput) error {
 			[]string{m.From, m.To},
 			now,
 		)
-	case "final":
-		from := m.State
-		m.State = StateCompleted
-		m.TerminalAt = now
-		s.publishLocked(
-			ObserveStateChange,
-			map[string]any{
-				"message_id": m.MessageID,
-				"from_state": from,
-				"to_state":   m.State,
-				"at":         now,
-				"body":       body,
-				"meta":       input.Meta,
-			},
-			m.ConversationID,
-			[]string{m.From, m.To},
-			now,
-		)
-	case "error":
-		from := m.State
-		m.State = StateError
-		m.TerminalAt = now
+	} else {
 		s.publishLocked(
 			ObserveStateChange,
 			map[string]any{
@@ -1697,11 +1707,17 @@ func (s *Store) PostEvent(input EventInput) error {
 			now,
 		)
 	}
-
 	return nil
 }
 
 func (s *Store) Inject(input InjectInput) (*Message, error) {
+	return s.inject(input, nil)
+}
+
+// inject accepts the same durability barrier as direct sends. Durable
+// backends commit the message, conversation link, delivery record, and
+// counters before the injection becomes visible or a push callback is queued.
+func (s *Store) inject(input InjectInput, commit func(*sendAcceptance) error) (*Message, error) {
 	now := s.now()
 	identity := strings.TrimSpace(input.Identity)
 	body := strings.TrimSpace(input.Body)
@@ -1721,18 +1737,38 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var enqueueFailure *pushJob
+	var enqueueFailureReason string
+	defer func() {
+		s.mu.Unlock()
+		if enqueueFailure != nil && enqueueFailure.onFailure != nil {
+			enqueueFailure.onFailure(0, enqueueFailureReason)
+		}
+	}()
 	s.sweepLocked(now)
 
-	conv, err := s.ensureConversationLocked(CreateConversationInput{ConversationID: input.ConversationID}, now)
-	if err != nil {
-		return nil, err
+	nextConv := s.nextConversationID
+	conversationID := strings.TrimSpace(input.ConversationID)
+	if conversationID == "" {
+		nextConv++
+		conversationID = fmt.Sprintf("c-%06d", nextConv)
+	}
+	var conv Conversation
+	if existing, ok := s.conversations[conversationID]; ok {
+		conv = *existing
+		conv.Participants = append([]string{}, existing.Participants...)
+	} else {
+		conv = Conversation{
+			ConversationID: conversationID,
+			Status:         "active",
+			CreatedAt:      now,
+			LastMessageAt:  now,
+		}
 	}
 
-	s.nextMessageID++
-	mid := fmt.Sprintf("m-%06d", s.nextMessageID)
-	m := &Message{
-		MessageID:      mid,
+	nextMsg := s.nextMessageID + 1
+	m := Message{
+		MessageID:      fmt.Sprintf("m-%06d", nextMsg),
 		Type:           MessageTypeInform,
 		From:           "human:" + identity,
 		To:             to,
@@ -1745,8 +1781,9 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 		TTLExpiresAt:   now.Add(s.cfg.DefaultMessageTTL),
 	}
 
-	pushCallbackURL := ""
-	pushPayload := map[string]any(nil)
+	var inboxEvent *InboxEvent
+	pushURL := ""
+	var pushPayload map[string]any
 
 	if to != "" {
 		target, ok := s.agents[to]
@@ -1763,9 +1800,10 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 			m.State = StatePending
 		} else {
 			if target.Mode == AgentModePush && strings.TrimSpace(target.CallbackURL) != "" {
-				pushCallbackURL = strings.TrimSpace(target.CallbackURL)
+				pushURL = strings.TrimSpace(target.CallbackURL)
 				pushPayload = map[string]any{
 					"message_id":      m.MessageID,
+					"request_id":      m.RequestID,
 					"type":            m.Type,
 					"from":            m.From,
 					"conversation_id": m.ConversationID,
@@ -1774,7 +1812,7 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 					"created_at":      m.CreatedAt,
 				}
 			}
-			s.appendInboxLocked(to, InboxEvent{
+			evt := InboxEvent{
 				MessageID:      m.MessageID,
 				Type:           m.Type,
 				From:           m.From,
@@ -1782,17 +1820,43 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 				Body:           m.Body,
 				Meta:           m.Meta,
 				CreatedAt:      m.CreatedAt,
-			})
+			}
+			inboxEvent = &evt
 		}
 	}
 
 	if isTerminal(m.State) {
 		m.TerminalAt = now
 	}
-	s.messages[mid] = m
-	s.conversationMessages[conv.ConversationID] = append(s.conversationMessages[conv.ConversationID], mid)
-	conv.MessageCount = len(s.conversationMessages[conv.ConversationID])
+	position := len(s.conversationMessages[conv.ConversationID])
+	conv.MessageCount = position + 1
 	conv.LastMessageAt = now
+	acceptance := &sendAcceptance{
+		message:            m,
+		conversation:       conv,
+		conversationPos:    position,
+		nextConversationID: nextConv,
+		nextMessageID:      nextMsg,
+		inboxEvent:         inboxEvent,
+		pushURL:            pushURL,
+		pushPayload:        pushPayload,
+	}
+	if commit != nil {
+		if err := commit(acceptance); err != nil {
+			return nil, err
+		}
+	}
+
+	s.nextConversationID = nextConv
+	s.nextMessageID = nextMsg
+	convCopy := conv
+	s.conversations[conv.ConversationID] = &convCopy
+	messageCopy := m
+	s.messages[m.MessageID] = &messageCopy
+	s.conversationMessages[conv.ConversationID] = append(s.conversationMessages[conv.ConversationID], m.MessageID)
+	if inboxEvent != nil {
+		s.appendInboxLocked(to, *inboxEvent)
+	}
 
 	s.publishLocked(
 		ObserveHumanInjection,
@@ -1824,11 +1888,20 @@ func (s *Store) Inject(input InjectInput) (*Message, error) {
 		now,
 	)
 
-	if pushCallbackURL != "" && pushPayload != nil {
-		s.enqueuePushLocked(pushCallbackURL, pushPayload)
+	if pushURL != "" && pushPayload != nil {
+		job := pushJob{
+			url:       pushURL,
+			payload:   pushPayload,
+			onSuccess: acceptance.pushSuccess,
+			onFailure: acceptance.pushFailure,
+		}
+		if failure := s.enqueuePushJobLocked(job); failure != "" {
+			enqueueFailure = &job
+			enqueueFailureReason = failure
+		}
 	}
 
-	cp := *m
+	cp := messageCopy
 	return &cp, nil
 }
 
