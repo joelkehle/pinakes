@@ -3,13 +3,13 @@ summary: "Decision-hold comparison of current Pinakes HMAC identity and audit me
 read_when:
   - Discussing, planning, or reviewing Pinakes issue #7 or WP4.
   - Considering signed envelopes, asymmetric agent identity, credential rotation, or tamper-evident audit.
-status: decision-hold
+status: accepted
 ---
 
 # BUSFT WP4: Pinakes and Buzz Comparison Memo
 
 - Issue: [#7](https://github.com/joelkehle/pinakes/issues/7)
-- Status: Comparison only; WP4 remains on decision hold
+- Status: Recommendation accepted; WP4 implementation remains unauthorized ([maintainer ruling](https://github.com/joelkehle/pinakes/issues/7#issuecomment-5095983376))
 - Prepared: 2026-07-25
 - Maintainer: Joel Kehle
 - Executor: Unassigned
