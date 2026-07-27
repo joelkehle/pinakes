@@ -4,13 +4,13 @@ read_when:
   - Planning or reviewing Pinakes issue #16.
   - Changing BUS_NAMESPACE_MODE, BUS_LEGACY_SCOPE, agent IDs, allowlists, shared grants, or persisted identity fields.
   - Preparing any strict-mode or consolidation rehearsal.
-status: decision-draft
+status: accepted
 ---
 
 # BUSFT Namespace Migration Draft
 
 - Issue: [#16](https://github.com/joelkehle/pinakes/issues/16)
-- Status: Decision draft; no migration authorized
+- Status: Accepted for planning only; no migration authorized ([maintainer ruling](https://github.com/joelkehle/pinakes/issues/16#issuecomment-5095983219))
 - Prepared: 2026-07-25
 - Maintainer: Joel Kehle
 - Executor: Unassigned
