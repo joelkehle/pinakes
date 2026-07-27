@@ -126,17 +126,38 @@ rehearsal copy, never directly on the live database. It must rewrite only:
 - `agents.agent_id`;
 - `messages.from_agent`;
 - non-empty `messages.to_agent`;
-- each exact identity string inside `conversations.participants`; and
+- each exact identity string inside `conversations.participants`;
+- `deliveries.target_agent_id`;
+- `delivery_cursors.target_agent_id`;
+- `idempotency.from_agent`;
+- non-empty `idempotency.to_agent`; and
 - identity-keyed policy/config entries in a separately reviewed change.
 
 It must not search or replace message bodies, titles, metadata, attachments,
 callback URLs, or arbitrary JSON text.
+
+Amendment, 2026-07-27: the `deliveries`, `delivery_cursors`, and `idempotency`
+columns were added to the surface after the WP2 durable-delivery schema landed;
+the original list predates those tables. They are durable, load-bearing state
+under the durability contract — pending deliveries, acknowledgment progress,
+and the promised idempotency window — and must be rewritten, not cleared or
+left bare. All other columns in those tables, including free-text
+`deliveries.last_error`, remain outside the surface.
 
 The tool must consume an explicit manifest with:
 
 ```text
 source_authority, source_id, target_id, disposition, owner_repo, evidence
 ```
+
+The disposition vocabulary is closed: `migrate`, `retire`, `split`,
+`unchanged`. Any other value is a fail-closed refusal, not a new disposition;
+conditional dispositions in earlier planning material are resolved to one of
+these four before a manifest is cut. `retire` requires a non-empty `target_id`
+— the identity's namespaced home under the full-legacy-ID rule — and the tool
+rewrites its history rows and `agents` row exactly as for `migrate`.
+Retirement's operational meaning (no future consumer; deregistration) is
+outside the tool, keeping it rename-only with exact manifest inversion.
 
 It must fail closed on:
 
