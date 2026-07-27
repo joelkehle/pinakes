@@ -17,7 +17,7 @@ requires explicit acceptance.
 | Work | Name | Issue | State | Planning artifact |
 | --- | --- | --- | --- | --- |
 | WP1 | Namespace + scope enforcement | [#4](https://github.com/joelkehle/pinakes/issues/4) | done | HTTP contract |
-| WP2 | Delivery durability + replication + restore | [#5](https://github.com/joelkehle/pinakes/issues/5) | implementation in review | [durability contract](BUSFT_DURABILITY_CONTRACT_DRAFT.md) |
+| WP2 | Delivery durability + replication + restore | [#5](https://github.com/joelkehle/pinakes/issues/5) | direct delivery merged; replication + restore pending | [durability contract](BUSFT_DURABILITY_CONTRACT_DRAFT.md) |
 | WP3 | Client SDK hardening | [#6](https://github.com/joelkehle/pinakes/issues/6) | later; blocked by contract decisions | issue |
 | WP4 | Identity/signing + audit | [#7](https://github.com/joelkehle/pinakes/issues/7) | decision hold | [Buzz comparison](BUSFT_WP4_BUZZ_COMPARISON.md) |
 | WP5 | Keystone deploy config and UCLA move | [#8](https://github.com/joelkehle/pinakes/issues/8) | done | deployment runbook |
