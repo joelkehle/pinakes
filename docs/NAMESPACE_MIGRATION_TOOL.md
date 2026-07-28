@@ -122,6 +122,10 @@ Standard output is a deterministic, metadata-only JSON report. It contains:
 - collision entries containing only manifest identities and row numbers;
 - stable refusal codes and non-secret reasons.
 
+The `conversations.participants` rewrite count is the number of participant
+identity occurrences across all conversations, not the number of conversation
+rows.
+
 Statuses are `ready` (successful dry-run), `applied`, `no-op`, or `refused`.
 The report never includes message content, secrets, private metadata,
 attachments, callback URLs, evidence text, or free-text delivery errors.

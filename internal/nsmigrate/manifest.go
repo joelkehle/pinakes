@@ -125,6 +125,8 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 		}
 		seenSources[sourceKey] = line
 
+		// Unchanged rows also reserve their target: that identity already exists, so
+		// a rename from another source must not be allowed to collide with it.
 		targetKey := string(row.SourceAuthority) + "\x00" + row.TargetID
 		if previous, ok := targetOwners[targetKey]; ok && previous.SourceID != row.SourceID {
 			return Manifest{}, refuse(
