@@ -153,13 +153,29 @@ source_authority, source_id, target_id, disposition, owner_repo, evidence
 The disposition vocabulary is closed: `migrate`, `retire`, `split`,
 `unchanged`. Any other value is a fail-closed refusal, not a new disposition;
 conditional dispositions in earlier planning material are resolved to one of
-these four before a manifest is cut. `retire` requires a non-empty `target_id`
-— the identity's namespaced home under the full-legacy-ID rule — and the tool
-rewrites its history rows and `agents` row exactly as for `migrate`.
-Retirement's operational meaning (no future consumer; deregistration) is
-outside the tool, keeping it rename-only with exact manifest inversion.
+these four before a manifest is cut.
 
-It must fail closed on:
+`retire` requires a non-empty `target_id` — the identity's namespaced home
+under the full-legacy-ID rule — and the tool rewrites its history rows and
+`agents` row exactly as for `migrate`. Renaming persisted rows gives retired
+history an explicit home; it creates no operational identity. No allowlist
+entry, configuration, or credential is created for the target, which is what
+"do not create a strict-mode target" forbids above. Retirement's operational
+meaning (no future consumer; deregistration) is outside the tool, keeping it
+rename-only with exact manifest inversion; the manifest row and the report's
+per-disposition counts are the durable record of retire intent.
+
+`split` is expressed as one manifest row per authority for the same legacy ID
+— e.g. `(jk, id) → personal.id` and `(ucla, id) → ucla.id`. A run must declare
+the authority of the database copy it operates on and select rows by
+`(source_authority, source_id)`; each split row is then mechanically a
+`migrate` against that copy. A single run never touches both authorities, and
+an identity present in the copy with no manifest row under the declared
+authority is a fail-closed refusal even if the other authority names it.
+Credential provisioning and consumer adapter splitting remain outside the
+tool.
+
+It must fail closed, uniformly across every surface column, on:
 
 - an unprefixed value absent from the manifest;
 - two source identities mapping to one target;
