@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+const (
+	// The fixture plans 14 identity-cell rewrites across the eight contract surfaces.
+	expectedFixtureRewrites = 14
+	// Three fixture mappings perform renames; the unchanged row is not already applied.
+	expectedAppliedMappings = 3
+)
+
 func TestGoldenDryRun(t *testing.T) {
 	path := createFixtureDB(t)
 	manifest := loadManifestFixture(t, "success_manifest.csv")
@@ -42,7 +49,7 @@ func TestApplyIdempotenceAndInverse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if report.Status != "applied" || report.TotalRewrites != 14 {
+	if report.Status != "applied" || report.TotalRewrites != expectedFixtureRewrites {
 		t.Fatalf("apply report = %#v", report)
 	}
 	verifyAppliedFixture(t, path)
@@ -51,7 +58,7 @@ func TestApplyIdempotenceAndInverse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent apply: %v", err)
 	}
-	if second.Status != "no-op" || second.TotalRewrites != 0 || second.AlreadyAppliedMappings != 3 {
+	if second.Status != "no-op" || second.TotalRewrites != 0 || second.AlreadyAppliedMappings != expectedAppliedMappings {
 		t.Fatalf("second apply report = %#v", second)
 	}
 
@@ -60,7 +67,7 @@ func TestApplyIdempotenceAndInverse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inverse apply: %v", err)
 	}
-	if undo.Status != "applied" || undo.TotalRewrites != 14 {
+	if undo.Status != "applied" || undo.TotalRewrites != expectedFixtureRewrites {
 		t.Fatalf("inverse report = %#v", undo)
 	}
 	if restored := snapshotDB(t, path); restored != original {

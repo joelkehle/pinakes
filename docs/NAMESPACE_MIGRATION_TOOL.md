@@ -16,6 +16,10 @@ be pointed at a live Pinakes database.
 The command defaults to dry-run. Apply requires both `--apply` and the
 copies-only acknowledgment; every run requires the acknowledgment:
 
+`--acknowledge-copy` is an operator assertion, not a liveness check. The tool
+performs no process, lock, journal/WAL, content, or filesystem liveness
+heuristic.
+
 ```bash
 go run ./cmd/pinakes-migrate \
   --db /path/to/stopped-copy.db \
