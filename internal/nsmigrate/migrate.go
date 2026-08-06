@@ -11,7 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type Options struct {
@@ -63,6 +64,14 @@ func Run(ctx context.Context, manifest Manifest, options Options) (Report, error
 
 	tx, err := database.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
+		if options.Apply && isSQLiteBusy(err) {
+			return reject(
+				report,
+				"database_busy",
+				"database",
+				"another process held a write lock when the apply transaction started",
+			)
+		}
 		return reject(report, "database_error", "database", "begin transaction: "+err.Error())
 	}
 	committed := false
@@ -71,10 +80,6 @@ func Run(ctx context.Context, manifest Manifest, options Options) (Report, error
 			_ = tx.Rollback()
 		}
 	}()
-	if _, err := tx.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
-		return reject(report, "database_error", "database", "enable read-only preflight: "+err.Error())
-	}
-
 	inspected, err := inspect(ctx, tx)
 	if err != nil {
 		return rejectFromError(report, err)
@@ -99,9 +104,6 @@ func Run(ctx context.Context, manifest Manifest, options Options) (Report, error
 		return report, nil
 	}
 
-	if _, err := tx.ExecContext(ctx, "PRAGMA query_only = OFF"); err != nil {
-		return reject(report, "database_error", "database", "enable apply transaction: "+err.Error())
-	}
 	if err := applyPlan(ctx, tx, selected, inspected); err != nil {
 		return reject(report, "apply_failed", "database", err.Error())
 	}
@@ -149,21 +151,30 @@ func openExistingDB(path string, apply bool) (*sql.DB, error) {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
 	mode := "ro"
+	busyTimeout := "5000"
 	if apply {
 		mode = "rw"
+		busyTimeout = "1000"
 	}
 	dsn := (&url.URL{Scheme: "file", Path: absolute}).String() +
-		"?mode=" + mode + "&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+		"?mode=" + mode + "&_pragma=busy_timeout(" + busyTimeout + ")&_pragma=foreign_keys(1)"
+	if apply {
+		dsn += "&_txlock=immediate"
+	}
 	database, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	database.SetMaxOpenConns(1)
 	if err := database.Ping(); err != nil {
 		_ = database.Close()
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	return database, nil
+}
+
+func isSQLiteBusy(err error) bool {
+	var sqliteError *sqlite.Error
+	return errors.As(err, &sqliteError) && sqliteError.Code()&0xff == sqlite3.SQLITE_BUSY
 }
 
 func inspect(ctx context.Context, tx *sql.Tx) (inspection, error) {

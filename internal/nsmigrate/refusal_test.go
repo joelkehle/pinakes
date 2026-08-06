@@ -1,6 +1,7 @@
 package nsmigrate
 
 import (
+	"database/sql"
 	"os"
 	"strings"
 	"testing"
@@ -127,6 +128,36 @@ func TestCopyAcknowledgmentRequired(t *testing.T) {
 	}
 	if after := snapshotDB(t, path); after != before {
 		t.Fatal("missing acknowledgment changed the database")
+	}
+}
+
+func TestApplyRefusesBusyDatabaseBeforeWrite(t *testing.T) {
+	path := createFixtureDB(t)
+	before := snapshotDB(t, path)
+
+	locker, err := sql.Open("sqlite", path+"?_txlock=immediate&_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatalf("open lock holder: %v", err)
+	}
+	defer locker.Close()
+	lock, err := locker.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin lock holder: %v", err)
+	}
+	defer lock.Rollback()
+
+	report, err := runApply(t, path, loadManifestFixture(t, "success_manifest.csv"))
+	if code := refusalCode(t, err); code != "database_busy" {
+		t.Fatalf("refusal code = %q, want database_busy", code)
+	}
+	if report.Status != "refused" {
+		t.Fatalf("report status = %q, want refused", report.Status)
+	}
+	if err := lock.Rollback(); err != nil {
+		t.Fatalf("release lock holder: %v", err)
+	}
+	if after := snapshotDB(t, path); after != before {
+		t.Fatal("database_busy refusal changed the database")
 	}
 }
 
