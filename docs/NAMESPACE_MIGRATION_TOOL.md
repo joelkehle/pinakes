@@ -16,9 +16,9 @@ be pointed at a live Pinakes database.
 The command defaults to dry-run. Apply requires both `--apply` and the
 copies-only acknowledgment; every run requires the acknowledgment:
 
-`--acknowledge-copy` is an operator assertion, not a liveness check. The tool
-performs no process, lock, journal/WAL, content, or filesystem liveness
-heuristic.
+`--acknowledge-copy` is an operator assertion, not a general liveness check.
+Apart from the competing-writer check described below, the tool performs no
+process, journal/WAL, content, or filesystem liveness heuristic.
 
 ```bash
 go run ./cmd/pinakes-migrate \
@@ -70,6 +70,13 @@ The pair is accepted in either direction so an inverted manifest is an exact
 undo plan. `unchanged` requires identical source and target values with an
 existing `personal.`, `ucla.`, or `shared.` namespace.
 
+An authority-scoped manifest may enumerate an identity from the other
+authority only as `unchanged`, with `target_id` equal to `source_id`. The row
+acknowledges that identity for manifest completeness but never mutates it.
+Any other attempted foreign-authority mapping is refused with
+`foreign_authority_mutation`. `shared.*` identities remain separately
+permitted.
+
 `retire` and `split` are mechanically identical to `migrate`. Their
 dispositions remain visible in the report; operational retirement, consumer
 adapter splitting, and credential provisioning are outside this tool.
@@ -95,12 +102,15 @@ keeps every other value, including the existing secret, on that same row.
 Conversation participants must be a JSON array of strings. Rewrites use exact
 element equality, never text replacement. A resulting conversation may contain
 one authority scope plus `shared.*`, but never both `personal.*` and `ucla.*`.
+Rewritten conversation participants are serialized as compact canonical JSON;
+untouched rows keep their exact original bytes.
 
 ## Preflight and refusal
 
-All validation and database inspection completes under SQLite `query_only`
-before apply executes its first update. Any refusal rolls back without a
-write. The tool fails closed on:
+Dry-run opens the database with `mode=ro`. Apply uses one `BEGIN IMMEDIATE`
+read-write transaction: all validation and database inspection completes
+before the first update, and any refusal rolls back without a write. The seven
+manifest/database-content preflight refusal conditions are:
 
 - an identity not named as a source or already-applied target under the
   declared authority;
@@ -108,11 +118,19 @@ write. The tool fails closed on:
 - a source and its target both being present;
 - mixed personal/UCLA conversation participants;
 - invalid participants JSON;
-- any manifest attempt to expand the rewrite surface.
+- any manifest attempt to expand the rewrite surface;
+- any attempted mutation of a foreign-authority identity.
 
 An already-applied target is recognized only through a row selected for the
 declared authority. This makes a second apply a no-op without weakening
 authority isolation.
+
+### Apply lock acquisition
+
+A `database_busy` refusal means another process held a write lock at apply
+time. `--acknowledge-copy` remains the operator's responsibility;
+`BEGIN IMMEDIATE` catches only a competing writer at lock acquisition time,
+not an idle process with the database open.
 
 ## Report
 
