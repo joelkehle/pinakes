@@ -232,6 +232,16 @@ func parseManifestRow(record []string, line int) (ManifestRow, error) {
 
 func validateMapping(row ManifestRow) error {
 	location := fmt.Sprintf("manifest:%d", row.Line)
+	if foreignAuthorityScope(row.SourceAuthority, row.SourceID) ||
+		foreignAuthorityScope(row.SourceAuthority, row.TargetID) {
+		if row.Disposition != DispositionUnchanged || row.SourceID != row.TargetID {
+			return refuse(
+				"foreign_authority_mutation",
+				location,
+				"foreign-authority identities may only be declared unchanged with target_id equal to source_id",
+			)
+		}
+	}
 	if row.Disposition == DispositionUnchanged {
 		if row.SourceID != row.TargetID {
 			return refuse("manifest_schema", location, "unchanged requires source_id == target_id")
@@ -316,6 +326,15 @@ func explicitScope(id string) (string, bool) {
 func hasExplicitScope(id string) bool {
 	_, ok := explicitScope(id)
 	return ok
+}
+
+func foreignAuthorityScope(authority Authority, id string) bool {
+	scope, ok := explicitScope(id)
+	if !ok {
+		return false
+	}
+	return authority == AuthorityJK && scope == "ucla" ||
+		authority == AuthorityUCLA && scope == "personal"
 }
 
 func refuse(code, location, detail string) error {

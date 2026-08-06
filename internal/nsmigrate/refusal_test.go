@@ -115,6 +115,48 @@ func TestOtherAuthoritySplitTargetCannotSatisfyJKRun(t *testing.T) {
 	assertApplyRefusedWithoutWrite(t, path, loadManifestFixture(t, "success_manifest.csv"), "unknown_identity")
 }
 
+func TestForeignAuthorityUnchangedIsAllowedAndPreserved(t *testing.T) {
+	path := createFixtureDB(t)
+	execFixtureSQL(t, path, `INSERT INTO agents VALUES
+		('ucla.foreign-worker', 'foreign-secret', 'https://invalid/foreign', 'foreign', '{}')`)
+
+	manifest := manifestWithExtraRow(t,
+		"jk,ucla.foreign-worker,ucla.foreign-worker,unchanged,example/repo,synthetic foreign scope\n")
+	report, err := runApply(t, path, manifest)
+	if err != nil {
+		t.Fatalf("apply with foreign unchanged identity: %v", err)
+	}
+	if report.Status != "applied" {
+		t.Fatalf("report status = %q, want applied", report.Status)
+	}
+
+	database, err := sql.Open("sqlite", path+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open applied database: %v", err)
+	}
+	defer database.Close()
+	assertStrings(t, database,
+		"SELECT agent_id || '|' || secret FROM agents WHERE agent_id = 'ucla.foreign-worker'",
+		[]string{"ucla.foreign-worker|foreign-secret"},
+	)
+}
+
+func TestJKManifestRefusesUCLAMutationWithoutWrite(t *testing.T) {
+	path := createFixtureDB(t)
+	execFixtureSQL(t, path, `INSERT INTO agents VALUES
+		('ucla.foreign-worker', 'foreign-secret', 'https://invalid/foreign', 'foreign', '{}')`)
+	assertForeignManifestRefusedWithoutWrite(t, path,
+		"jk,ucla.foreign-worker,personal.ucla-foreign-worker,migrate,example/repo,synthetic foreign mutation\n")
+}
+
+func TestUCLAManifestRefusesPersonalMutationWithoutWrite(t *testing.T) {
+	path := createFixtureDB(t)
+	execFixtureSQL(t, path, `INSERT INTO agents VALUES
+		('personal.foreign-worker', 'foreign-secret', 'https://invalid/foreign', 'foreign', '{}')`)
+	assertForeignManifestRefusedWithoutWrite(t, path,
+		"ucla,personal.foreign-worker,ucla.personal-foreign-worker,migrate,example/repo,synthetic foreign mutation\n")
+}
+
 func TestCopyAcknowledgmentRequired(t *testing.T) {
 	path := createFixtureDB(t)
 	before := snapshotDB(t, path)
@@ -177,4 +219,34 @@ func assertApplyRefusedWithoutWrite(t *testing.T, path string, manifest Manifest
 	if after := snapshotDB(t, path); after != before {
 		t.Fatalf("refusal %q changed the database", wantCode)
 	}
+}
+
+func assertForeignManifestRefusedWithoutWrite(t *testing.T, path, row string) {
+	t.Helper()
+	before := snapshotDB(t, path)
+	_, err := ParseManifest(strings.NewReader(readManifestFixture(t, "success_manifest.csv") + row))
+	if code := refusalCode(t, err); code != "foreign_authority_mutation" {
+		t.Fatalf("refusal code = %q, want foreign_authority_mutation", code)
+	}
+	if after := snapshotDB(t, path); after != before {
+		t.Fatal("foreign_authority_mutation refusal changed the database")
+	}
+}
+
+func manifestWithExtraRow(t *testing.T, row string) Manifest {
+	t.Helper()
+	manifest, err := ParseManifest(strings.NewReader(readManifestFixture(t, "success_manifest.csv") + row))
+	if err != nil {
+		t.Fatalf("parse manifest with extra row: %v", err)
+	}
+	return manifest
+}
+
+func readManifestFixture(t *testing.T, name string) string {
+	t.Helper()
+	contents, err := os.ReadFile(fixturePath(name))
+	if err != nil {
+		t.Fatalf("read manifest fixture: %v", err)
+	}
+	return string(contents)
 }
