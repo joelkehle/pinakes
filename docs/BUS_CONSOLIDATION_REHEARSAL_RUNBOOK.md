@@ -3,7 +3,7 @@ summary: "Outline for rehearsing the retire-and-re-register consolidation of the
 read_when:
   - Preparing or reviewing the rehearsal authorized on Pinakes issue #15.
   - Taking authority snapshots or running pinakes-migrate on rehearsal copies.
-  - Comparing seeded and fresh strict-mode unified bus boots.
+  - Rehearsing the empty-store strict-mode unified bus boot.
 status: outline
 ---
 
@@ -19,8 +19,7 @@ status: outline
 
 - Prove the JK-to-`personal.*` and UCLA-to-`ucla.*` namespace rewrites on
   independent database copies.
-- Compare a unified strict-mode bus booted from a rewritten survivor copy with
-  one booted from an empty store.
+- Prove a unified strict-mode bus booted from an empty store.
 - Prove representative cross-domain re-registration against the isolated
   rehearsal bus.
 - Produce a recommendation for the production execution gate.
@@ -30,15 +29,19 @@ status: outline
 - Consolidation is **retire and re-register**, not a two-history import.
 - No database rows move from one authority into the other.
 - Rewritten databases are rehearsal evidence and searchable archives under the
-  final namespaced identities.
-- The production survivor and seeded-versus-fresh choice remain Joel's decision
-  at the execution gate.
+  final namespaced identities; they prove that the rewrite tool is correct and
+  exactly invertible, but they never become the unified bus's boot database.
+- The unified bus starts from an empty strict-mode store. This is the
+  2026-08-08 plan of record, not a rehearsal comparison or execution-gate
+  choice.
 
 ### 1.3 Authorized in this phase
 
 - Online-consistent snapshots on Keystone using SQLite `VACUUM INTO`.
 - Dry-run and apply against disposable copies of those snapshots only.
-- Isolated strict-mode boots from a rewritten survivor copy and an empty store.
+- Local synthetic-fixture rehearsals using schema-true databases containing
+  fabricated content only.
+- An isolated strict-mode boot from an empty store.
 - Representative registration tests using rehearsal-only credentials and
   endpoints.
 - Evidence collection and a recommendation on issue #15.
@@ -58,20 +61,32 @@ status: outline
 ### 2.1 Roles and approvals
 
 - Decision and production execution owner: Joel Kehle.
-- Rehearsal operator: `[TBD]`.
+- Ludi owns this runbook, both manifests, the post-migration allowlist proposal,
+  rehearsal scripts, and the local schema-true synthetic-fixture rehearsal.
+- Joel or a designated fleet-side operator owns the real Keystone snapshots,
+  the real-data rehearsal executed step-for-step from this runbook, and any
+  separately authorized production execution.
+- Ludi requires no fleet access for this work and does not receive real bus
+  databases. The databases contain private message content and remain on
+  Joel-controlled fleet machines throughout snapshotting, rehearsal,
+  retention, and execution.
 - Rehearsal reviewer/witness: `[TBD]`.
 - Issue #15 authorization link and timestamp: `[TBD]`.
 
 ### 2.2 Access and tool prerequisites
 
-- Confirm Joel-granted Keystone access.
-- Confirm the current Keystone host and both authority runtimes by read-only
-  inventory; do not rely only on historical Beelink port information.
+- The fleet-side operator confirms access to Keystone and both authority
+  runtimes by read-only inventory; do not rely only on historical Beelink port
+  information.
 - Record versions for `sqlite3`, `pinakes-migrate`, Pinakes, Go (if invoking via
   `go run`), Docker, and Docker Compose.
-- Record the exact live DB paths without printing secrets or message content.
-- Confirm sufficient disk space and permissions for two pristine snapshots,
-  disposable working copies, empty-store comparison, logs, and reports.
+- The fleet-side operator records the exact live DB paths without printing
+  secrets or message content.
+- The fleet-side operator confirms sufficient disk space and permissions for
+  two pristine snapshots, disposable working copies, an empty-store rehearsal,
+  logs, and reports.
+- Confirm that Ludi's local rehearsal uses only generated schema-true fixtures
+  with fabricated content and rehearsal-only credentials.
 - Confirm the manager-repository paths for the reviewed manifests and staged
   post-migration allowlist.
 
@@ -83,7 +98,8 @@ status: outline
 - Named consumer and removal date for every alias proposed to survive.
 - Separate rehearsal identities and credentials for the personal and UCLA
   `jk-calendar-guard-agent` deployments.
-- A reviewed isolation plan for rehearsal ports, network, volumes, and
+- Reviewed isolation plans for Ludi's local synthetic rehearsal and the
+  fleet-side real-data rehearsal, including ports, network, volumes/paths, and
   credentials.
 
 ### 2.4 Immediate stop conditions
@@ -94,8 +110,10 @@ status: outline
   snapshot directory.
 - The source authority, manifest authority, filename, or recorded checksum does
   not agree.
-- A rehearsal endpoint is reachable by production agents or shares production
-  credentials unexpectedly.
+- A local or fleet-side rehearsal endpoint is reachable by production agents
+  or shares production credentials unexpectedly.
+- Any real database, private message content, or production credential would
+  leave Joel-controlled fleet machines or become accessible to Ludi.
 - A report returns `refused`, an unexpected collision, mixed-scope
   participants, invalid JSON, or an unclassified identity.
 - Any step would require a production mutation not covered by the rehearsal
@@ -103,7 +121,7 @@ status: outline
 
 ## 3. Paths, naming, and evidence ledger
 
-### 3.1 Keystone-only directory layout
+### 3.1 Fleet-side Keystone directory layout
 
 Proposed root (confirm before use):
 
@@ -120,7 +138,9 @@ Proposed root (confirm before use):
 - Pristine snapshots are never passed to `pinakes-migrate --apply`.
 - Each apply or rollback test starts from a new working copy of a verified
   pristine snapshot.
-- Database files and content-bearing output never leave Keystone.
+- Real database files and content-bearing output never leave Joel-controlled
+  fleet machines. Ludi's local files are independently generated synthetic
+  fixtures containing fabricated content only.
 
 ### 3.2 File naming convention
 
@@ -144,6 +164,10 @@ authority, timestamp, byte size, and SHA-256 checksum in the evidence ledger.
 - Post only reviewed, sanitized results to issue #15.
 
 ## 4. Read-only pre-rehearsal inventory
+
+The fleet-side operator performs this section against the real authorities.
+Ludi performs the structurally equivalent checks against generated synthetic
+fixtures without receiving or querying fleet data.
 
 ### 4.1 Runtime inventory
 
@@ -171,6 +195,10 @@ authority, timestamp, byte size, and SHA-256 checksum in the evidence ledger.
 - Resolve every other alias to `retire` before cutting the final manifest.
 
 ## 5. Online-consistent snapshot procedure
+
+This section is executed only by Joel or a designated fleet-side operator on
+Keystone. Ludi does not execute `VACUUM INTO`, access the live DB paths, or
+receive the resulting snapshots.
 
 ### 5.1 Preflight
 
@@ -218,6 +246,10 @@ authority, timestamp, byte size, and SHA-256 checksum in the evidence ledger.
 
 ## 7. JK namespace rewrite rehearsal
 
+Ludi first runs this flow locally against a generated JK synthetic fixture.
+The fleet-side operator later repeats it against a disposable working copy of
+the real JK snapshot and reports sanitized results on issue #15.
+
 ### 7.1 Reset JK working copy
 
 - Delete or archive only the specifically named disposable JK working copy
@@ -255,6 +287,10 @@ authority, timestamp, byte size, and SHA-256 checksum in the evidence ledger.
 Repeat the reset, dry-run, apply, post-apply comparison, and inverse spot-check
 from section 7 using the UCLA pristine snapshot and `--authority ucla`.
 
+Ludi first runs the flow against a generated UCLA synthetic fixture. The
+fleet-side operator later repeats it against a disposable working copy of the
+real UCLA snapshot and reports sanitized results on issue #15.
+
 Explicitly confirm that neither authority relies on the other authority's
 manifest rows for completeness and that no foreign-authority mutation occurs.
 
@@ -270,35 +306,38 @@ manifest rows for completeness and that no foreign-authority mutation occurs.
   allowlist.
 - Record the exact Pinakes build/tag and rendered non-secret configuration.
 
-### 9.2 Seeded-survivor boot
+### 9.2 Empty-store plan of record
 
-- Select the rewritten survivor candidate for this comparison without implying
-  a production survivor decision.
-- Start the isolated bus from a disposable copy of that rewritten database.
-- Verify health, strict-mode rejection of an unprefixed registration, registry
-  visibility, and representative persisted history under final IDs.
-- Record startup time, health results, registry/count observations, and any
-  operational risks.
+- Start the isolated unified bus from a new empty database in strict mode.
+- Do not start it from either rewritten archive. The namespace rewrites exist
+  only as correctness/invertibility evidence and searchable historical
+  archives.
+- This empty-store plan was ratified on 2026-08-08 based on ruling 4 of issue
+  #16, heartbeat-driven agent re-registration, and consistency with the
+  same-day decision that the IP Agency bus resets fresh at its UCLA cutover.
 
-### 9.3 Fresh-store boot
+### 9.3 Empty-store boot verification
 
-- Start the same isolated strict-mode configuration with a new empty database.
 - Verify health, empty baseline behavior, strict-mode rejection of unprefixed
   identities, and readiness for namespaced re-registration.
-- Record the same measurements used for the seeded boot.
+- Verify that no state from either authority or rewritten archive is present.
+- Record startup time, health results, empty baseline counts, registry
+  observations after representative re-registration, and operational risks.
 
-### 9.4 Seeded-versus-fresh comparison
+### 9.4 Decision evidence and execution-gate record
 
-- Compare operational simplicity, retained searchable transport history,
-  privacy/retention exposure, startup behavior, rollback clarity, and failure
-  modes.
-- Do not choose the production approach during rehearsal; produce a written
-  recommendation for Joel's execution-gate decision.
+- Record that empty-store boot is the approved topology and that neither
+  rewritten archive is a boot candidate.
+- Confirm that both old authority snapshots and both rewritten archives will be
+  retained on fleet machines for the approved retention period.
+- Report any evidence that would block the empty-store plan, but do not reopen
+  the ratified decision as an operator preference.
 
 ## 10. Representative cross-domain re-registration
 
-Run against each boot candidate where practical, using rehearsal-only agents
-or adapters and separate credentials.
+Run against the isolated empty-store bus using rehearsal-only agents or
+adapters and separate credentials. Ludi performs the local synthetic version;
+the fleet-side operator performs the real-data rehearsal version.
 
 ### 10.1 Required identities
 
@@ -344,8 +383,8 @@ or adapters and separate credentials.
 
 ### 11.3 Unified boot and registration evidence
 
-- [ ] Seeded strict-mode boot passed in isolation.
-- [ ] Fresh strict-mode boot passed in isolation.
+- [ ] Empty-store strict-mode boot passed in isolation.
+- [ ] Neither rewritten archive was used as the boot database.
 - [ ] Unprefixed registration rejection proved.
 - [ ] Representative personal and UCLA registrations proved.
 - [ ] Both calendar-guard deployments registered with separate credentials.
@@ -366,20 +405,23 @@ or adapters and separate credentials.
 
 - Stop the isolated rehearsal project/process.
 - Preserve its configuration summary and sanitized evidence.
-- Re-create the seeded candidate from the rewritten working result, or create a
-  new empty-store path.
+- Remove/archive only the explicitly resolved disposable rehearsal database and
+  create a new empty-store path.
 - Reapply the rehearsal-only allowlist and credentials; never substitute the
   production allowlist path.
 
 ### 12.3 Production rollback point to recommend
 
-- Define the last reversible point before agents are redirected or an authority
-  is retired.
-- Define the retained live-authority snapshot(s), previous endpoints/config,
-  credential handling, and health/registry checks required to restore service.
-- Estimate and record the rollback time objective based on rehearsal evidence.
-- Leave the final rollback point and retention period for Joel's execution-gate
-  approval.
+- Retain both old bus deployments, both snapshots, and both rewritten archives
+  on fleet machines through the approved rollback period.
+- If the empty unified bus cutover fails, stop or isolate it, restore the prior
+  agent endpoint configuration, and restart both old buses against their
+  unchanged authority stores.
+- Verify both old health endpoints and registry repopulation by expected
+  identity. Snapshot restoration is not part of the normal rollback because
+  the old authority databases were not rewritten or imported.
+- Estimate and record the time required to restart both old buses and restore
+  routing based on rehearsal evidence.
 
 ## 13. Recommendation and issue #15 report template
 
@@ -388,19 +430,23 @@ or adapters and separate credentials.
 - Date/time, operator, reviewer, Pinakes revision, tool versions.
 - Sanitized snapshot identifiers/checksums and manifest revisions.
 - JK and UCLA dry-run/apply/inverse outcomes.
-- Seeded and fresh strict-mode boot outcomes.
+- Empty-store strict-mode boot outcome.
 - Representative re-registration outcomes.
 - Deviations, refusals, unresolved risks, and evidence paths on Keystone.
 
 ### 13.2 Required recommendation
 
-- Recommend **seeded survivor** or **fresh strict-mode store**, with reasons.
-- Recommend which current authority survives as the unified process, if the
-  evidence supports a preference; otherwise state what remains to decide.
+- Confirm whether the evidence supports the ratified empty-store strict-mode
+  plan; identify any blocker rather than proposing a rewritten archive as the
+  boot database.
 - Recommend cutover order for allowlist staging, unified boot, agent endpoint
   changes, re-registration verification, and old-authority retirement.
-- Recommend the last safe rollback point, rollback trigger, estimated rollback
-  duration, and snapshot retention period.
+- Document the quiet-window exposure: in-flight messages and the 24-hour
+  idempotency window are the only transport state expected to blink when agents
+  move to the empty unified bus.
+- Recommend the rollback trigger, estimated time to restart both old buses and
+  restore routing, and the retention period for both snapshots and rewritten
+  archives.
 
 ### 13.3 Execution gate
 
@@ -411,14 +457,17 @@ or adapters and separate credentials.
 
 ## 14. Parameters to resolve before promoting this outline
 
-- Keystone host/access grant and operator account.
+- Joel-designated fleet-side operator account and reviewer/witness.
 - Current JK/UCLA container names, DB paths, images, ports, networks, and
   volumes.
 - Approved snapshot root, permissions, owner, retention period, and available
   space.
 - Manager-repository manifest and candidate allowlist paths/revisions.
-- Rehearsal isolation topology and non-production ports.
-- Survivor candidates and exact seeded database copy used for comparison.
+- Local synthetic-fixture generator inputs, output paths, and non-production
+  ports.
+- Fleet-side real-data rehearsal isolation topology and non-production ports.
+- Empty-store unified bus path/configuration and proof that it cannot resolve to
+  either rewritten archive.
 - Representative personal/UCLA agents and their rehearsal launch method.
 - Calendar-guard split-deployment owners, configurations, and rehearsal-only
   credential provisioning method.
