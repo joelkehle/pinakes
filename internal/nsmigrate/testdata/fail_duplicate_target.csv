@@ -1,0 +1,3 @@
+source_authority,source_id,target_id,disposition,owner_repo,evidence
+jk,worker-a,personal.worker-a,migrate,example/repo,synthetic first worker
+jk,personal.worker-a,personal.worker-a,unchanged,example/repo,synthetic occupied target

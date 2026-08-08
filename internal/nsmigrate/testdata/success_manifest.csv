@@ -1,0 +1,6 @@
+source_authority,source_id,target_id,disposition,owner_repo,evidence
+jk,atlas-ingest,personal.atlas-ingest,migrate,example/personal-agents,synthetic active worker
+jk,archive-daemon,personal.archive-daemon,retire,example/personal-agents,synthetic retired worker
+jk,dual-canary,personal.dual-canary,split,example/shared-adapters,synthetic personal side
+ucla,dual-canary,ucla.dual-canary,split,example/shared-adapters,synthetic UCLA side
+jk,personal.steady-worker,personal.steady-worker,unchanged,example/personal-agents,synthetic existing namespace

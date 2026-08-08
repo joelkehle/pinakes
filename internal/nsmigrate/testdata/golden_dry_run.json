@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "mode": "dry-run",
+  "authority": "jk",
+  "status": "ready",
+  "manifest_rows": 4,
+  "manifest_by_disposition": {
+    "migrate": 1,
+    "retire": 1,
+    "split": 1,
+    "unchanged": 1
+  },
+  "planned_by_disposition": {
+    "migrate": 1,
+    "retire": 1,
+    "split": 1,
+    "unchanged": 0
+  },
+  "rewrites_by_surface": {
+    "agents.agent_id": 3,
+    "conversations.participants": 3,
+    "deliveries.target_agent_id": 1,
+    "delivery_cursors.target_agent_id": 1,
+    "idempotency.from_agent": 2,
+    "idempotency.to_agent": 1,
+    "messages.from_agent": 2,
+    "messages.to_agent": 1
+  },
+  "total_rewrites": 14,
+  "already_applied_mappings": 0,
+  "collisions": [],
+  "refusals": []
+}

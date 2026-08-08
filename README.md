@@ -8,6 +8,7 @@ Current contents:
 - `pkg/httpapi` - HTTP transport and handlers
 - `pkg/busclient` - Go client SDK
 - `cmd/pinakes` - reference standalone server
+- `cmd/pinakes-migrate` - dry-run-first namespace migration rehearsal tool
 
 Endpoints:
 
@@ -51,6 +52,7 @@ Runtime config:
 Contract doc:
 
 - [docs/BUS_HTTP_CONTRACT.md](docs/BUS_HTTP_CONTRACT.md)
+- [docs/NAMESPACE_MIGRATION_TOOL.md](docs/NAMESPACE_MIGRATION_TOOL.md)
 
 ## For consumers
 
