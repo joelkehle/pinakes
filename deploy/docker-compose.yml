@@ -22,6 +22,7 @@ services:
       BUS_NAMESPACE_MODE: ${BUS_NAMESPACE_MODE:?set BUS_NAMESPACE_MODE for this authority}
       BUS_LEGACY_SCOPE: ${BUS_LEGACY_SCOPE:?set BUS_LEGACY_SCOPE for this authority}
       SHARED_GRANT_AGENTS: ${SHARED_GRANT_AGENTS:-}
+      CONTROL_PLANE_AGENTS: ${CONTROL_PLANE_AGENTS:-}
     volumes:
       - bus-data:/data
       - ${MANAGER_CONFIG_DIR:?set MANAGER_CONFIG_DIR to the manager ops config directory}:/etc/pinakes:ro

@@ -3,7 +3,6 @@ package nsmigrate
 import (
 	"context"
 	"database/sql"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -145,31 +144,9 @@ func refusalCode(t *testing.T, err error) string {
 
 func inverseManifest(t *testing.T, manifest Manifest) Manifest {
 	t.Helper()
-	var output strings.Builder
-	writer := csv.NewWriter(&output)
-	if err := writer.Write(manifestHeader); err != nil {
-		t.Fatalf("write inverse header: %v", err)
-	}
-	for _, row := range manifest.Rows {
-		record := []string{
-			string(row.SourceAuthority),
-			row.TargetID,
-			row.SourceID,
-			string(row.Disposition),
-			row.OwnerRepo,
-			row.Evidence,
-		}
-		if err := writer.Write(record); err != nil {
-			t.Fatalf("write inverse row: %v", err)
-		}
-	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		t.Fatalf("write inverse manifest: %v", err)
-	}
-	inverse, err := ParseManifest(strings.NewReader(output.String()))
+	inverse, err := InvertManifest(manifest)
 	if err != nil {
-		t.Fatalf("parse inverse manifest: %v", err)
+		t.Fatalf("invert manifest: %v", err)
 	}
 	return inverse
 }

@@ -92,6 +92,11 @@ type Config struct {
 	// may access shared.* resources. Registration bodies may request grants,
 	// but only this policy takes effect.
 	SharedGrantAgents []string
+	// ControlPlaneAgents is the server-authoritative list of unprefixed trusted
+	// infrastructure identities that may register in strict mode and access
+	// personal.*, ucla.*, and shared.* resources. An empty list grants no
+	// exceptions. Names are configuration, never hardcoded in the bus.
+	ControlPlaneAgents []string
 }
 
 type idempotencyEntry struct {
@@ -358,6 +363,17 @@ func (s *Store) logScopeDenied(action, identity, resource, reason string) {
 }
 
 func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) error {
+	if s.isControlPlaneAgent(agent.AgentID) {
+		if s.acceptsName(resource) {
+			return nil
+		}
+	}
+	// A configured control-plane queue is an explicit cross-scope rendezvous:
+	// ordinary scoped agents may address it, while no other unprefixed resource
+	// is admitted in strict mode.
+	if s.isControlPlaneAgent(resource) {
+		return nil
+	}
 	scope, ok := s.scopeOfName(resource)
 	if !ok {
 		s.logScopeDenied(action, agent.AgentID, resource, "unprefixed resource")
@@ -380,6 +396,12 @@ func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) err
 func (s *Store) agentCanAccessName(agentID, resource string) bool {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
+		return true
+	}
+	if s.isControlPlaneAgent(agentID) {
+		return s.acceptsName(resource)
+	}
+	if s.isControlPlaneAgent(resource) {
 		return true
 	}
 	scope, ok := s.scopeOfName(resource)
@@ -990,7 +1012,7 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if agentID == "" {
 		return nil, newError(CodeValidation, "agent_id is required", false, 0)
 	}
-	if _, ok := s.scopeOfName(agentID); !ok {
+	if !s.acceptsName(agentID) {
 		return nil, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if _, err := normalizeScopes(input.AllowedScopes); err != nil {
@@ -1116,7 +1138,7 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 		if strings.TrimSpace(participant) == "" {
 			continue
 		}
-		if _, ok := s.scopeOfName(participant); !ok {
+		if !s.acceptsName(participant) {
 			return nil, newError(CodeValidation, "participants must be prefixed with personal., ucla., or shared.", false, 0)
 		}
 	}
@@ -1184,13 +1206,13 @@ func (s *Store) sendMessage(input SendMessageInput, commit func(*sendAcceptance)
 	if to == "" {
 		return nil, false, newError(CodeValidation, "to is required", false, 0)
 	}
-	if _, ok := s.scopeOfName(to); !ok {
+	if !s.acceptsName(to) {
 		return nil, false, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if from == "" {
 		return nil, false, newError(CodeValidation, "from is required", false, 0)
 	}
-	if _, ok := s.scopeOfName(from); !ok {
+	if !s.acceptsName(from) {
 		return nil, false, newError(CodeValidation, "from must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if requestID == "" {
@@ -1428,7 +1450,7 @@ func (s *Store) pollInbox(input PollInboxInput, advance func(agentID string, cur
 	if agentID == "" {
 		return nil, 0, newError(CodeValidation, "agent_id is required", false, 0)
 	}
-	if _, ok := s.scopeOfName(agentID); !ok {
+	if !s.acceptsName(agentID) {
 		return nil, 0, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 
@@ -1726,7 +1748,7 @@ func (s *Store) inject(input InjectInput, commit func(*sendAcceptance) error) (*
 		return nil, newError(CodeValidation, "identity and body are required", false, 0)
 	}
 	if to != "" {
-		if _, ok := s.scopeOfName(to); !ok {
+		if !s.acceptsName(to) {
 			return nil, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
 		}
 	}

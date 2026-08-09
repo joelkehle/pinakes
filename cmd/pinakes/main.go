@@ -87,6 +87,26 @@ func parseNamespaceConfig(modeRaw, legacyScopeRaw string) (bus.NamespaceMode, bu
 	return mode, legacyScope, nil
 }
 
+func parseControlPlaneAgents(raw string) ([]string, error) {
+	seen := map[string]struct{}{}
+	agents := []string{}
+	for _, entry := range strings.Split(raw, ",") {
+		agentID := strings.TrimSpace(entry)
+		if agentID == "" {
+			continue
+		}
+		if strings.Contains(agentID, ".") {
+			return nil, fmt.Errorf("CONTROL_PLANE_AGENTS entries must be unprefixed, got %q", agentID)
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		agents = append(agents, agentID)
+	}
+	return agents, nil
+}
+
 func runHTTPServer(addr string, handler http.Handler, store bus.API) {
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -157,6 +177,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid namespace configuration: %v", err)
 	}
+	controlPlaneAgents, err := parseControlPlaneAgents(os.Getenv("CONTROL_PLANE_AGENTS"))
+	if err != nil {
+		log.Fatalf("invalid control-plane configuration: %v", err)
+	}
 
 	cfg := bus.Config{
 		GracePeriod:            30 * time.Second,
@@ -182,6 +206,7 @@ func main() {
 		NamespaceMode:         namespaceMode,
 		LegacyScope:           legacyScope,
 		SharedGrantAgents:     envCSV("SHARED_GRANT_AGENTS"),
+		ControlPlaneAgents:    controlPlaneAgents,
 	}
 
 	// Resolve DB path: --db flag > DB_PATH env > backend default. An explicit

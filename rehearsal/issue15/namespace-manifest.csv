@@ -1,0 +1,133 @@
+source_authority,source_id,target_id,disposition,owner_repo,evidence,control_plane
+jk,codex-bg-notifier,personal.codex-bg-notifier,migrate,jk/jk-email-agents,issue-15 allowlist 2026-08-08,false
+jk,contacts-agent,personal.contacts-agent,retire,jk/jk-email-agents,issue-15 compatibility alias default-retire,false
+jk,email-operator,personal.email-operator,retire,jk/jk-email-agents,issue-15 compatibility alias default-retire,false
+jk,gmail-ingest,personal.gmail-ingest,retire,jk/jk-email-agents,issue-15 compatibility alias default-retire,false
+jk,hall-monitor,personal.hall-monitor,migrate,jk/jk-email-agents,issue-15 allowlist 2026-08-08,false
+jk,jk-calendar-guard-agent,personal.jk-calendar-guard-agent,split,jk/jk-email-agents,issue-16 ruling-2 split,false
+jk,jk-claim-ledger-writer,personal.jk-claim-ledger-writer,migrate,jk/jk-email-agents,issue-15 allowlist 2026-08-08,false
+jk,jk-claude-wiki-mcp,personal.jk-claude-wiki-mcp,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-contacts-agent,personal.jk-contacts-agent,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-deposit-runner,personal.jk-deposit-runner,migrate,jk/jk-email-agents,issue-15 allowlist 2026-08-08,false
+jk,jk-email-operator,personal.jk-email-operator,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-fable-operator,personal.jk-fable-operator,split,jk/jk-email-agents,issue-16 cross-authority split ruling,false
+jk,jk-gcal-ingest,personal.jk-gcal-ingest,retire,jk/jk-email-agents,issue-16 persisted-only retire ruling,false
+jk,jk-gmail-ingest,personal.jk-gmail-ingest,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-inbox-action-agent,personal.jk-inbox-action-agent,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-inbox-triage-agent,personal.jk-inbox-triage-agent,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-llm-wiki-bridge,personal.jk-llm-wiki-bridge,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-outlook-calendar-agent,personal.jk-outlook-calendar-agent,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-paper-extractor,personal.jk-paper-extractor,migrate,jk/jk-email-agents,issue-15 allowlist 2026-08-08,false
+jk,jk-polsia-agent,personal.jk-polsia-agent,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-reply-draft-agent,personal.jk-reply-draft-agent,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-source-ingest-worker,personal.jk-source-ingest-worker,migrate,jk/jk-email-agents,issue-15 allowlist 2026-08-08,false
+jk,jk-topic-critic,personal.jk-topic-critic,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-topic-judge,personal.jk-topic-judge,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-topic-researcher,personal.jk-topic-researcher,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-topic-runner,personal.jk-topic-runner,migrate,jk/jk-email-agents,issue-15 allowlist 2026-08-08,false
+jk,jk-travel-agent,personal.jk-travel-agent,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,jk-unsub-agent,personal.jk-unsub-agent,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,keystone-tailscale-keymaster,personal.keystone-tailscale-keymaster,migrate,joelkehle/manager,issue-15 live registry 2026-08-08,false
+jk,llmwiki-closer,personal.llmwiki-closer,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,llmwiki-drafter,personal.llmwiki-drafter,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,llmwiki-observer,personal.llmwiki-observer,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,llmwiki-scribe-twitter,personal.llmwiki-scribe-twitter,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,llmwiki-skeptic,personal.llmwiki-skeptic,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,local-intake-canary,personal.local-intake-canary,split,jk/jk-email-agents,issue-16 cross-authority split ruling,false
+jk,macmini-academic-paper-retriever,personal.macmini-academic-paper-retriever,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,macmini-local-intake-clerk,personal.macmini-local-intake-clerk,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,macmini-notify-joel,personal.macmini-notify-joel,migrate,jk/jk-email-agents,issue-15 live registry 2026-08-08,false
+jk,managerd,managerd,unchanged,joelkehle/manager,issue-16 control-plane exception,true
+jk,notify-joel-smoke,personal.notify-joel-smoke,migrate,jk/jk-email-agents,issue-15 allowlist 2026-08-08,false
+jk,polsia-agent,personal.polsia-agent,retire,jk/jk-email-agents,issue-15 compatibility alias default-retire,false
+jk,project-invention-specialist-smoke-client,personal.project-invention-specialist-smoke-client,retire,ucla-tdg/ucla-tdg-ip-agents,issue-16 retire JK registration,false
+jk,travel-agent,personal.travel-agent,retire,jk/jk-email-agents,issue-15 compatibility alias default-retire,false
+jk,unsub-agent,personal.unsub-agent,retire,jk/jk-email-agents,issue-15 compatibility alias default-retire,false
+ucla,agentopolis-ucla-reader,ucla.agentopolis-ucla-reader,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 allowlist 2026-08-08,false
+ucla,claude-architect,ucla.claude-architect,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,codex-architect,ucla.codex-architect,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,contacts-agent,ucla.contacts-agent,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,gmail-ingest-ucla,ucla.gmail-ingest-ucla,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,jk-calendar-guard-agent,ucla.jk-calendar-guard-agent,split,jk/jk-email-agents,issue-16 ruling-2 split,false
+ucla,jk-fable-operator,ucla.jk-fable-operator,split,jk/jk-email-agents,issue-16 cross-authority split ruling,false
+ucla,local-intake-canary,ucla.local-intake-canary,split,jk/jk-email-agents,issue-16 cross-authority split ruling,false
+ucla,managerd,managerd,unchanged,joelkehle/manager,issue-16 control-plane exception,true
+ucla,managerd-pm,ucla.managerd-pm,migrate,joelkehle/manager,issue-15 allowlist manager control-plane section,false
+ucla,next-email,ucla.next-email,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,next-email-cli,ucla.next-email-cli,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,next-email-worker,ucla.next-email-worker,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,pm-bus-proof-client,ucla.pm-bus-proof-client,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 allowlist 2026-08-08,false
+ucla,project-invention-specialist-smoke-client,ucla.project-invention-specialist-smoke-client,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-16 confirm UCLA registration,false
+ucla,triage-action-extractor,ucla.triage-action-extractor,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-action-extractor-worker,ucla.triage-action-extractor-worker,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-archive-learner,ucla.triage-archive-learner,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-archive-learner-worker,ucla.triage-archive-learner-worker,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-archive-watcher,ucla.triage-archive-watcher,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-claude-builder,ucla.triage-claude-builder,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-codex-builder,ucla.triage-codex-builder,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-intake,ucla.triage-intake,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-project-mapper,ucla.triage-project-mapper,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-project-mapper-worker,ucla.triage-project-mapper-worker,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-summarizer,ucla.triage-summarizer,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,triage-summarizer-worker,ucla.triage-summarizer-worker,retire,ucla-tdg/ucla-tdg-email-triage,issue-15 compatibility alias default-retire,false
+ucla,tta-disclosure-processor,ucla.tta-disclosure-processor,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,tta-market-analysis,ucla.tta-market-analysis,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,tta-market-extractor,ucla.tta-market-extractor,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,tta-operator,ucla.tta-operator,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,tta-patent-extractor,ucla.tta-patent-extractor,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,tta-patent-screen,ucla.tta-patent-screen,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,tta-prior-art-extractor,ucla.tta-prior-art-extractor,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,tta-prior-art-search,ucla.tta-prior-art-search,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,ucla-tdg-chat-project-manager,ucla.ucla-tdg-chat-project-manager,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-chat-project-manager-contact-resolver,ucla.ucla-tdg-chat-project-manager-contact-resolver,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-claude-architect,ucla.ucla-tdg-claude-architect,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-codex-architect,ucla.ucla-tdg-codex-architect,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-contact-resolver,ucla.ucla-tdg-contact-resolver,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-contract-template-agent,ucla.ucla-tdg-contract-template-agent,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-daily-briefing-agent,ucla.ucla-tdg-daily-briefing-agent,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-disclosure-processor,ucla.ucla-tdg-disclosure-processor,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-doc-clerk,ucla.ucla-tdg-doc-clerk,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-github-review-agent,ucla.ucla-tdg-github-review-agent,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias without removal date,false
+ucla,ucla-tdg-gmail-history-watcher,ucla.ucla-tdg-gmail-history-watcher,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-gmail-ingest,ucla.ucla-tdg-gmail-ingest,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-google-chat,ucla.ucla-tdg-google-chat,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias without removal date,false
+ucla,ucla-tdg-inbox-triage,ucla.ucla-tdg-inbox-triage,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-intern-manager,ucla.ucla-tdg-intern-manager,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,ucla-tdg-intern-manager-drafts,ucla.ucla-tdg-intern-manager-drafts,retire,ucla-tdg/ucla-tdg-ip-agents,issue-15 compatibility alias default-retire,false
+ucla,ucla-tdg-ip-dd,ucla.ucla-tdg-ip-dd,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-market-analysis,ucla.ucla-tdg-market-analysis,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-market-extractor,ucla.ucla-tdg-market-extractor,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-next-email,ucla.ucla-tdg-next-email,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-next-email-cli,ucla.ucla-tdg-next-email-cli,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-next-email-worker,ucla.ucla-tdg-next-email-worker,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-operator,ucla.ucla-tdg-operator,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-outlook-calendar-agent,ucla.ucla-tdg-outlook-calendar-agent,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-outlook-calendar-write-agent,ucla.ucla-tdg-outlook-calendar-write-agent,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-patent-docket,ucla.ucla-tdg-patent-docket,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-patent-docket-cli,ucla.ucla-tdg-patent-docket-cli,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-patent-extractor,ucla.ucla-tdg-patent-extractor,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-patent-screen,ucla.ucla-tdg-patent-screen,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-prior-art-extractor,ucla.ucla-tdg-prior-art-extractor,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-prior-art-search,ucla.ucla-tdg-prior-art-search,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-project-invention-specialist,ucla.ucla-tdg-project-invention-specialist,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-project-invention-specialist-smoke,ucla.ucla-tdg-project-invention-specialist-smoke,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-project-manager,ucla.ucla-tdg-project-manager,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-scheduler-agent,ucla.ucla-tdg-scheduler-agent,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-triage-action-extractor,ucla.ucla-tdg-triage-action-extractor,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-action-extractor-worker,ucla.ucla-tdg-triage-action-extractor-worker,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-archive-learner,ucla.ucla-tdg-triage-archive-learner,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-archive-learner-worker,ucla.ucla-tdg-triage-archive-learner-worker,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-archive-watcher,ucla.ucla-tdg-triage-archive-watcher,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-claude-builder,ucla.ucla-tdg-triage-claude-builder,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-classifier,ucla.ucla-tdg-triage-classifier,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-triage-codex-builder,ucla.ucla-tdg-triage-codex-builder,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-intake,ucla.ucla-tdg-triage-intake,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-opus-builder,ucla.ucla-tdg-triage-opus-builder,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-pm-bridge,ucla.ucla-tdg-triage-pm-bridge,migrate,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla-tdg-triage-project-mapper,ucla.ucla-tdg-triage-project-mapper,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-project-mapper-worker,ucla.ucla-tdg-triage-project-mapper-worker,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-summarizer,ucla.ucla-tdg-triage-summarizer,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-tdg-triage-summarizer-worker,ucla.ucla-tdg-triage-summarizer-worker,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla-labeling-accuracy-reader,ucla.ucla-labeling-accuracy-reader,migrate,ucla-tdg/ucla-tdg-email-triage,issue-15 allowlist 2026-08-08,false
+ucla,ucla.contribution-coordinator,ucla.contribution-coordinator,unchanged,ucla-tdg/ucla-tdg-ip-agents,issue-15 live registry 2026-08-08,false
+ucla,ucla.contribution-coordinator.drafts,ucla.contribution-coordinator.drafts,unchanged,ucla-tdg/ucla-tdg-ip-agents,issue-15 allowlist 2026-08-08,false

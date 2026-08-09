@@ -4,14 +4,15 @@ read_when:
   - Preparing or reviewing the rehearsal authorized on Pinakes issue #15.
   - Taking authority snapshots or running pinakes-migrate on rehearsal copies.
   - Rehearsing the empty-store strict-mode unified bus boot.
-status: outline
+status: draft
 ---
 
 # Bus Consolidation Rehearsal Runbook
 
-> **Outline only.** Commands, host paths, container names, ports, credentials,
-> manifests, allowlist contents, and evidence locations remain to be confirmed
-> before this runbook is executable.
+This runbook is written for cold execution by Joel or a designated fleet-side
+operator. Resolve and record the host-specific values in section 14 before
+running fleet steps. Commands fail closed around existing destinations and
+live-path equality; do not weaken those checks for convenience.
 
 ## 1. Purpose and authorization boundary
 
@@ -92,12 +93,18 @@ status: outline
 
 ### 2.3 Required artifacts
 
-- Reviewed JK and UCLA manifest data using the exact schema documented in
-  `docs/NAMESPACE_MIGRATION_TOOL.md`.
-- A staged post-migration allowlist from the manager repository.
+- Reviewed combined JK/UCLA manifest at
+  `rehearsal/issue15/namespace-manifest.csv`, using the exact schema documented
+  in `docs/NAMESPACE_MIGRATION_TOOL.md`. The combined file is required so every
+  split pair is present during parsing; each run still selects one authority.
+- Candidate post-migration allowlist at
+  `rehearsal/issue15/post-migration-allowlist.txt`. It is rehearsal input, not
+  authorization to replace the manager-owned production file.
 - Named consumer and removal date for every alias proposed to survive.
 - Separate rehearsal identities and credentials for the personal and UCLA
   `jk-calendar-guard-agent` deployments.
+- A reviewed `CONTROL_PLANE_AGENTS=managerd` policy for the unified rehearsal
+  bus and matching `control_plane=true` rows in both authority manifests.
 - Reviewed isolation plans for Ludi's local synthetic rehearsal and the
   fleet-side real-data rehearsal, including ports, network, volumes/paths, and
   credentials.
@@ -123,7 +130,8 @@ status: outline
 
 ### 3.1 Fleet-side Keystone directory layout
 
-Proposed root (confirm before use):
+Proposed layout under the approved absolute snapshot root (confirm the root
+before use):
 
 ```text
 ~/bus-snapshots/<UTC-date>/
@@ -133,6 +141,24 @@ Proposed root (confirm before use):
   reports/
   logs/
   checksums/
+```
+
+Create a new restrictive directory for this run; do not reuse a previous
+rehearsal root:
+
+```bash
+SNAPSHOT_BASE=/confirmed/absolute/path/to/bus-snapshots
+case "$SNAPSHOT_BASE" in /*) ;; *) exit 1 ;; esac
+REHEARSAL_UTC=$(date -u +%Y%m%dT%H%M%SZ)
+REHEARSAL_ROOT="$SNAPSHOT_BASE/$REHEARSAL_UTC"
+test ! -e "$REHEARSAL_ROOT"
+install -d -m 700 \
+  "$REHEARSAL_ROOT/pristine" \
+  "$REHEARSAL_ROOT/working" \
+  "$REHEARSAL_ROOT/empty" \
+  "$REHEARSAL_ROOT/reports" \
+  "$REHEARSAL_ROOT/logs" \
+  "$REHEARSAL_ROOT/checksums"
 ```
 
 - Pristine snapshots are never passed to `pinakes-migrate --apply`.
@@ -208,10 +234,32 @@ receive the resulting snapshots.
 - Confirm available disk space and source database readability.
 - Record source health and inventory timestamp immediately before snapshot.
 
+The fleet-side operator resolves these values from the live container/volume
+inventory and records them in the evidence ledger:
+
+```bash
+JK_LIVE_DB=/confirmed/absolute/path/to/jk.db
+UCLA_LIVE_DB=/confirmed/absolute/path/to/ucla.db
+JK_SNAPSHOT="$REHEARSAL_ROOT/pristine/pinakes-jk-$REHEARSAL_UTC-pristine.db"
+UCLA_SNAPSHOT="$REHEARSAL_ROOT/pristine/pinakes-ucla-$REHEARSAL_UTC-pristine.db"
+
+test -f "$JK_LIVE_DB"
+test -f "$UCLA_LIVE_DB"
+test "$JK_LIVE_DB" != "$UCLA_LIVE_DB"
+test ! -e "$JK_SNAPSHOT"
+test ! -e "$UCLA_SNAPSHOT"
+case "$JK_SNAPSHOT$UCLA_SNAPSHOT" in *"'"*) exit 1 ;; esac
+```
+
 ### 5.2 Create one snapshot per authority
 
-- Run `sqlite3 <confirmed-live-db> "VACUUM INTO '<new-pristine-path>'"` for JK.
-- Run the same procedure independently for UCLA.
+- Run the following independently for JK and UCLA:
+
+```bash
+sqlite3 "$JK_LIVE_DB" "VACUUM INTO '$JK_SNAPSHOT'"
+sqlite3 "$UCLA_LIVE_DB" "VACUUM INTO '$UCLA_SNAPSHOT'"
+```
+
 - Never use a plain file copy of a running SQLite database.
 - Capture exit status and sanitized stderr without exposing database content.
 
@@ -223,14 +271,26 @@ receive the resulting snapshots.
 - Mark the pristine files read-only after validation.
 - Create separately named working copies for all subsequent rehearsal steps.
 
+```bash
+test "$(sqlite3 "$JK_SNAPSHOT" 'PRAGMA quick_check')" = ok
+test "$(sqlite3 "$UCLA_SNAPSHOT" 'PRAGMA quick_check')" = ok
+sha256sum "$JK_SNAPSHOT" "$UCLA_SNAPSHOT" \
+  >"$REHEARSAL_ROOT/checksums/pristine.sha256"
+chmod 400 "$JK_SNAPSHOT" "$UCLA_SNAPSHOT"
+```
+
 ## 6. Manifest and staged allowlist review
 
 ### 6.1 Manifest validation
 
-- Reference, but do not duplicate, the private manager-owned artifact paths.
+- Review the combined issue #15 manifest and its evidence fields without
+  copying production configuration or private database content into it.
 - Confirm exact CSV header, authority values, closed disposition vocabulary,
   unique source rows, unique targets, and full legacy-ID preservation.
 - Confirm `managerd` is unchanged as the one privileged control-plane identity.
+- Confirm both `managerd` rows carry `control_plane=true`, every other row
+  carries `control_plane=false`, and each rehearsal run sets
+  `CONTROL_PLANE_AGENTS=managerd` so the manifest and runtime policy agree.
 - Confirm `jk-calendar-guard-agent` has one `split` row per authority and will
   use separate deployments and credentials.
 - Confirm retired identities retain namespaced historical homes but receive no
@@ -238,11 +298,23 @@ receive the resulting snapshots.
 
 ### 6.2 Post-migration allowlist review
 
-- Build the candidate allowlist in the manager repository.
+- Review the candidate allowlist in this branch. The approved production
+  version will later replace the manager-owned source of truth only after the
+  execution gate.
 - Confirm final `personal.*` and `ucla.*` entries match active consumers.
 - Confirm alias exceptions include a consumer and removal date.
 - Confirm no production allowlist file is changed during rehearsal.
 - Stage or mount a rehearsal-only copy for unified boot tests.
+
+Regenerate the candidate and require no diff before rehearsal:
+
+```bash
+go run ./cmd/pinakes-manifest-allowlist \
+  --manifest rehearsal/issue15/namespace-manifest.csv \
+  >"$REHEARSAL_ROOT/working/generated-allowlist.txt"
+diff -u rehearsal/issue15/post-migration-allowlist.txt \
+  "$REHEARSAL_ROOT/working/generated-allowlist.txt"
+```
 
 ## 7. JK namespace rewrite rehearsal
 
@@ -252,11 +324,18 @@ the real JK snapshot and reports sanitized results on issue #15.
 
 ### 7.1 Reset JK working copy
 
-- Delete or archive only the specifically named disposable JK working copy
-  according to the approved retention rule.
-- Re-create it from the checksummed pristine JK snapshot.
+- Preserve any prior failed copy and choose a new working-copy path.
+- Create the new copy from the checksummed pristine JK snapshot.
 - Verify its checksum and prove its path differs from the live DB and pristine
   snapshot paths.
+
+```bash
+JK_WORKING="$REHEARSAL_ROOT/working/pinakes-jk-$REHEARSAL_UTC-rewrite.db"
+test ! -e "$JK_WORKING"
+test "$JK_WORKING" != "$JK_LIVE_DB"
+test "$JK_WORKING" != "$JK_SNAPSHOT"
+install -m 600 "$JK_SNAPSHOT" "$JK_WORKING"
+```
 
 ### 7.2 Dry-run
 
@@ -266,6 +345,16 @@ the real JK snapshot and reports sanitized results on issue #15.
 - Require `ready`; review mapping counts, rewrite counts, already-applied
   mappings, and collision/refusal sections.
 
+```bash
+export CONTROL_PLANE_AGENTS=managerd
+go run ./cmd/pinakes-migrate \
+  --db "$JK_WORKING" \
+  --manifest rehearsal/issue15/namespace-manifest.csv \
+  --authority jk \
+  --acknowledge-copy \
+  >"$REHEARSAL_ROOT/reports/jk-dry-run.json"
+```
+
 ### 7.3 Apply and verification
 
 - Run the same reviewed inputs with `--apply` against the JK working copy.
@@ -274,6 +363,16 @@ the real JK snapshot and reports sanitized results on issue #15.
 - Compare counts and representative rows across all eight rewrite surfaces.
 - Confirm no out-of-surface field changed.
 
+```bash
+go run ./cmd/pinakes-migrate \
+  --db "$JK_WORKING" \
+  --manifest rehearsal/issue15/namespace-manifest.csv \
+  --authority jk \
+  --acknowledge-copy \
+  --apply \
+  >"$REHEARSAL_ROOT/reports/jk-apply.json"
+```
+
 ### 7.4 Invertibility spot-check
 
 - Create a new inverse-test copy from the rewritten JK result.
@@ -281,6 +380,28 @@ the real JK snapshot and reports sanitized results on issue #15.
 - Apply the inverse to that disposable copy.
 - Compare selected records and counts with the pristine baseline; record the
   scope and result of the spot-check.
+
+Generate the exact inverse once, then apply it only to a new copy of the
+rewritten working database:
+
+```bash
+INVERSE_MANIFEST="$REHEARSAL_ROOT/working/inverse-manifest.csv"
+test ! -e "$INVERSE_MANIFEST"
+go run ./cmd/pinakes-manifest-invert \
+  --manifest rehearsal/issue15/namespace-manifest.csv \
+  --output "$INVERSE_MANIFEST"
+
+JK_INVERSE="$REHEARSAL_ROOT/working/pinakes-jk-$REHEARSAL_UTC-inverse.db"
+test ! -e "$JK_INVERSE"
+install -m 600 "$JK_WORKING" "$JK_INVERSE"
+go run ./cmd/pinakes-migrate \
+  --db "$JK_INVERSE" \
+  --manifest "$INVERSE_MANIFEST" \
+  --authority jk \
+  --acknowledge-copy \
+  --apply \
+  >"$REHEARSAL_ROOT/reports/jk-inverse-apply.json"
+```
 
 ## 8. UCLA namespace rewrite rehearsal
 
@@ -294,6 +415,43 @@ real UCLA snapshot and reports sanitized results on issue #15.
 Explicitly confirm that neither authority relies on the other authority's
 manifest rows for completeness and that no foreign-authority mutation occurs.
 
+Use unique `UCLA_WORKING` and `UCLA_INVERSE` paths under `working/`; substitute
+only the authority, pristine path, working paths, and report-name prefix in the
+commands from section 7. Do not reuse either JK database path.
+
+```bash
+UCLA_WORKING="$REHEARSAL_ROOT/working/pinakes-ucla-$REHEARSAL_UTC-rewrite.db"
+UCLA_INVERSE="$REHEARSAL_ROOT/working/pinakes-ucla-$REHEARSAL_UTC-inverse.db"
+test ! -e "$UCLA_WORKING"
+test ! -e "$UCLA_INVERSE"
+test "$UCLA_WORKING" != "$UCLA_LIVE_DB"
+test "$UCLA_WORKING" != "$UCLA_SNAPSHOT"
+install -m 600 "$UCLA_SNAPSHOT" "$UCLA_WORKING"
+
+go run ./cmd/pinakes-migrate \
+  --db "$UCLA_WORKING" \
+  --manifest rehearsal/issue15/namespace-manifest.csv \
+  --authority ucla \
+  --acknowledge-copy \
+  >"$REHEARSAL_ROOT/reports/ucla-dry-run.json"
+go run ./cmd/pinakes-migrate \
+  --db "$UCLA_WORKING" \
+  --manifest rehearsal/issue15/namespace-manifest.csv \
+  --authority ucla \
+  --acknowledge-copy \
+  --apply \
+  >"$REHEARSAL_ROOT/reports/ucla-apply.json"
+
+install -m 600 "$UCLA_WORKING" "$UCLA_INVERSE"
+go run ./cmd/pinakes-migrate \
+  --db "$UCLA_INVERSE" \
+  --manifest "$INVERSE_MANIFEST" \
+  --authority ucla \
+  --acknowledge-copy \
+  --apply \
+  >"$REHEARSAL_ROOT/reports/ucla-inverse-apply.json"
+```
+
 ## 9. Isolated unified strict-mode boot rehearsal
 
 ### 9.1 Isolation and common configuration
@@ -304,6 +462,8 @@ manifest rows for completeness and that no foreign-authority mutation occurs.
   bus.
 - Set `BUS_NAMESPACE_MODE=strict` and use only the staged post-migration
   allowlist.
+- Set `CONTROL_PLANE_AGENTS=managerd`; confirm the empty/default configuration
+  grants no strict-mode exception and no name is hardcoded in the bus.
 - Record the exact Pinakes build/tag and rendered non-secret configuration.
 
 ### 9.2 Empty-store plan of record
@@ -323,6 +483,24 @@ manifest rows for completeness and that no foreign-authority mutation occurs.
 - Verify that no state from either authority or rewritten archive is present.
 - Record startup time, health results, empty baseline counts, registry
   observations after representative re-registration, and operational risks.
+
+The local synthetic proof uses the real SQLite store and HTTP handler with the
+candidate allowlist and distinct fabricated credentials:
+
+```bash
+CONTROL_PLANE_AGENTS=managerd \
+  go run ./cmd/pinakes-empty-strict-rehearsal \
+  --db "$REHEARSAL_ROOT/empty/empty-strict-rehearsal.db" \
+  --allowlist rehearsal/issue15/post-migration-allowlist.txt \
+  --agents personal.jk-gmail-ingest,ucla.ucla-tdg-gmail-ingest,personal.jk-calendar-guard-agent,ucla.jk-calendar-guard-agent \
+  >"$REHEARSAL_ROOT/reports/empty-strict-rehearsal.json"
+```
+
+Require `status=passed`, `empty_before_registration=true`, distinct synthetic
+secrets, all three control-plane scopes, and rejection of the unlisted
+unprefixed probe. For fleet execution, also start the approved Pinakes build on
+an isolated non-production port/network from a new empty database and repeat
+the same registrations against its HTTP endpoint before recording success.
 
 ### 9.4 Decision evidence and execution-gate record
 
@@ -395,9 +573,9 @@ the fleet-side operator performs the real-data rehearsal version.
 ### 12.1 Reset a failed namespace rehearsal
 
 - Stop only the isolated process using the named working copy.
-- Preserve failed metadata-only reports and sanitized logs for diagnosis.
-- Remove/archive only the explicitly resolved disposable working-copy path.
-- Re-create the working copy from the validated pristine snapshot.
+- Preserve the failed working-copy path, metadata-only reports, and sanitized
+  logs for diagnosis. Create a newly timestamped working-copy path from the
+  validated pristine snapshot; never reuse or overwrite the failed path.
 - Reconfirm checksum, authority, manifest revision, and live-path inequality
   before retrying.
 
@@ -455,16 +633,17 @@ the fleet-side operator performs the real-data rehearsal version.
 - Stop. Do not redirect agents, mutate live databases/configuration, activate
   production strict mode, or retire either authority.
 
-## 14. Parameters to resolve before promoting this outline
+## 14. Parameters to resolve before fleet execution
 
 - Joel-designated fleet-side operator account and reviewer/witness.
 - Current JK/UCLA container names, DB paths, images, ports, networks, and
   volumes.
 - Approved snapshot root, permissions, owner, retention period, and available
   space.
-- Manager-repository manifest and candidate allowlist paths/revisions.
-- Local synthetic-fixture generator inputs, output paths, and non-production
-  ports.
+- Approved Pinakes revision containing the manifest, candidate allowlist,
+  generator, migration tool, and rehearsal commands.
+- Manager-repository production allowlist path/revision to be changed only
+  after the execution gate.
 - Fleet-side real-data rehearsal isolation topology and non-production ports.
 - Empty-store unified bus path/configuration and proof that it cannot resolve to
   either rewritten archive.

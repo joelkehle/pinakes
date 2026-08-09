@@ -62,7 +62,7 @@ func TestFailClosedMixedScopeParticipantsBeforeWrite(t *testing.T) {
 		t.Fatalf("read manifest: %v", err)
 	}
 	manifest, err := ParseManifest(strings.NewReader(string(base) +
-		"jk,ucla.foreign-worker,ucla.foreign-worker,unchanged,example/repo,synthetic foreign scope\n"))
+		"jk,ucla.foreign-worker,ucla.foreign-worker,unchanged,example/repo,synthetic foreign scope,false\n"))
 	if err != nil {
 		t.Fatalf("parse mixed-scope manifest: %v", err)
 	}
@@ -93,8 +93,8 @@ func TestFailClosedOutsideSurfaceBeforeWrite(t *testing.T) {
 }
 
 func TestClosedDispositionVocabulary(t *testing.T) {
-	input := `source_authority,source_id,target_id,disposition,owner_repo,evidence
-jk,worker,personal.worker,retire-unless-confirmed,example/repo,synthetic
+	input := `source_authority,source_id,target_id,disposition,owner_repo,evidence,control_plane
+jk,worker,personal.worker,retire-unless-confirmed,example/repo,synthetic,false
 `
 	_, err := ParseManifest(strings.NewReader(input))
 	if code := refusalCode(t, err); code != "invalid_disposition" {
@@ -121,7 +121,7 @@ func TestForeignAuthorityUnchangedIsAllowedAndPreserved(t *testing.T) {
 		('ucla.foreign-worker', 'foreign-secret', 'https://invalid/foreign', 'foreign', '{}')`)
 
 	manifest := manifestWithExtraRow(t,
-		"jk,ucla.foreign-worker,ucla.foreign-worker,unchanged,example/repo,synthetic foreign scope\n")
+		"jk,ucla.foreign-worker,ucla.foreign-worker,unchanged,example/repo,synthetic foreign scope,false\n")
 	report, err := runApply(t, path, manifest)
 	if err != nil {
 		t.Fatalf("apply with foreign unchanged identity: %v", err)
@@ -146,7 +146,7 @@ func TestJKManifestRefusesUCLAMutationWithoutWrite(t *testing.T) {
 	execFixtureSQL(t, path, `INSERT INTO agents VALUES
 		('ucla.foreign-worker', 'foreign-secret', 'https://invalid/foreign', 'foreign', '{}')`)
 	assertForeignManifestRefusedWithoutWrite(t, path,
-		"jk,ucla.foreign-worker,personal.ucla-foreign-worker,migrate,example/repo,synthetic foreign mutation\n")
+		"jk,ucla.foreign-worker,personal.ucla-foreign-worker,migrate,example/repo,synthetic foreign mutation,false\n")
 }
 
 func TestUCLAManifestRefusesPersonalMutationWithoutWrite(t *testing.T) {
@@ -154,7 +154,7 @@ func TestUCLAManifestRefusesPersonalMutationWithoutWrite(t *testing.T) {
 	execFixtureSQL(t, path, `INSERT INTO agents VALUES
 		('personal.foreign-worker', 'foreign-secret', 'https://invalid/foreign', 'foreign', '{}')`)
 	assertForeignManifestRefusedWithoutWrite(t, path,
-		"ucla,personal.foreign-worker,ucla.personal-foreign-worker,migrate,example/repo,synthetic foreign mutation\n")
+		"ucla,personal.foreign-worker,ucla.personal-foreign-worker,migrate,example/repo,synthetic foreign mutation,false\n")
 }
 
 func TestCopyAcknowledgmentRequired(t *testing.T) {
@@ -170,6 +170,72 @@ func TestCopyAcknowledgmentRequired(t *testing.T) {
 	}
 	if after := snapshotDB(t, path); after != before {
 		t.Fatal("missing acknowledgment changed the database")
+	}
+}
+
+func TestControlPlaneManifestMustMatchConfiguration(t *testing.T) {
+	manifest := parseManifestText(t, `source_authority,source_id,target_id,disposition,owner_repo,evidence,control_plane
+jk,managerd,managerd,unchanged,example/manager,synthetic control plane,true
+`)
+	path := createFixtureDB(t)
+	before := snapshotDB(t, path)
+	report, err := Run(t.Context(), manifest, Options{
+		DBPath:          path,
+		Authority:       AuthorityJK,
+		Apply:           true,
+		AcknowledgeCopy: true,
+	})
+	if code := refusalCode(t, err); code != "control_plane_mismatch" {
+		t.Fatalf("refusal code = %q, want control_plane_mismatch", code)
+	}
+	if report.Status != "refused" {
+		t.Fatalf("report status = %q, want refused", report.Status)
+	}
+	if after := snapshotDB(t, path); after != before {
+		t.Fatal("control-plane mismatch changed the database")
+	}
+}
+
+func TestConfiguredControlPlaneRequiresMarkedAuthorityRow(t *testing.T) {
+	path := createFixtureDB(t)
+	report, err := Run(t.Context(), loadManifestFixture(t, "success_manifest.csv"), Options{
+		DBPath:             path,
+		Authority:          AuthorityJK,
+		AcknowledgeCopy:    true,
+		ControlPlaneAgents: []string{"managerd"},
+	})
+	if code := refusalCode(t, err); code != "control_plane_mismatch" {
+		t.Fatalf("refusal code = %q, want control_plane_mismatch", code)
+	}
+	if report.Status != "refused" {
+		t.Fatalf("report status = %q, want refused", report.Status)
+	}
+}
+
+func TestControlPlaneManifestAndConfigurationAgree(t *testing.T) {
+	manifest := parseManifestText(t, `source_authority,source_id,target_id,disposition,owner_repo,evidence,control_plane
+jk,managerd,managerd,unchanged,example/manager,synthetic control plane,true
+`)
+	path := createFixtureDB(t)
+	execFixtureSQL(t, path, "DELETE FROM idempotency")
+	execFixtureSQL(t, path, "DELETE FROM delivery_cursors")
+	execFixtureSQL(t, path, "DELETE FROM deliveries")
+	execFixtureSQL(t, path, "DELETE FROM messages")
+	execFixtureSQL(t, path, "DELETE FROM conversations")
+	execFixtureSQL(t, path, "DELETE FROM agents")
+	execFixtureSQL(t, path, `INSERT INTO agents VALUES
+		('managerd', 'synthetic-secret', 'https://invalid/managerd', 'synthetic control plane', '{}')`)
+	report, err := Run(t.Context(), manifest, Options{
+		DBPath:             path,
+		Authority:          AuthorityJK,
+		AcknowledgeCopy:    true,
+		ControlPlaneAgents: []string{"managerd"},
+	})
+	if err != nil {
+		t.Fatalf("matching control-plane rehearsal: %v", err)
+	}
+	if report.Status != "no-op" {
+		t.Fatalf("report status = %q, want no-op", report.Status)
 	}
 }
 
@@ -238,6 +304,15 @@ func manifestWithExtraRow(t *testing.T, row string) Manifest {
 	manifest, err := ParseManifest(strings.NewReader(readManifestFixture(t, "success_manifest.csv") + row))
 	if err != nil {
 		t.Fatalf("parse manifest with extra row: %v", err)
+	}
+	return manifest
+}
+
+func parseManifestText(t *testing.T, input string) Manifest {
+	t.Helper()
+	manifest, err := ParseManifest(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse manifest: %v", err)
 	}
 	return manifest
 }

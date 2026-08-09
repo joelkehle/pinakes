@@ -1,2 +1,2 @@
-source_authority,source_id,target_id,disposition,owner_repo,evidence,rewrite_column
-jk,worker-a,personal.worker-a,migrate,example/repo,synthetic worker,messages.body
+source_authority,source_id,target_id,disposition,owner_repo,evidence,control_plane,rewrite_column
+jk,worker-a,personal.worker-a,migrate,example/repo,synthetic worker,false,messages.body

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/joelkehle/pinakes/internal/nsmigrate"
 )
@@ -67,10 +68,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	report, runErr := nsmigrate.Run(ctx, manifest, nsmigrate.Options{
-		DBPath:          *dbPath,
-		Authority:       authority,
-		Apply:           *apply,
-		AcknowledgeCopy: *acknowledgeCopy,
+		DBPath:             *dbPath,
+		Authority:          authority,
+		Apply:              *apply,
+		AcknowledgeCopy:    *acknowledgeCopy,
+		ControlPlaneAgents: envCSV("CONTROL_PLANE_AGENTS"),
 	})
 	if err := writeReport(stdout, report); err != nil {
 		fmt.Fprintf(stderr, "write report: %v\n", err)
@@ -80,6 +82,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func envCSV(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+	values := []string{}
+	for _, entry := range strings.Split(raw, ",") {
+		if value := strings.TrimSpace(entry); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func writeParseRefusal(output io.Writer, authority nsmigrate.Authority, apply bool, err error) {

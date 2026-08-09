@@ -184,6 +184,103 @@ func TestStrictModeRejectsLegacyIDs(t *testing.T) {
 	}
 }
 
+func TestStrictModeControlPlaneAgentHasAllScopes(t *testing.T) {
+	var logs bytes.Buffer
+	s := NewStore(Config{
+		NamespaceMode:      NamespaceModeStrict,
+		ControlPlaneAgents: []string{"managerd"},
+		SharedGrantAgents:  []string{"shared.target"},
+		Logger:             log.New(&logs, "", 0),
+		Clock: func() time.Time {
+			return time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+		},
+	})
+
+	mustRegisterScoped(t, s, "managerd", nil, nil)
+	mustRegisterScoped(t, s, "personal.target", nil, nil)
+	mustRegisterScoped(t, s, "ucla.target", nil, nil)
+	mustRegisterScoped(t, s, "shared.target", nil, nil)
+
+	var manager Agent
+	for _, agent := range s.ListAgents("") {
+		if agent.AgentID == "managerd" {
+			manager = agent
+			break
+		}
+	}
+	if got := strings.Join(manager.AllowedScopes, ","); got != "personal,ucla,shared" {
+		t.Fatalf("control-plane allowed scopes = %q", got)
+	}
+	if got := strings.Join(manager.SharedGrants, ","); got != "shared" {
+		t.Fatalf("control-plane shared grants = %q", got)
+	}
+
+	for _, target := range []string{"personal.target", "ucla.target", "shared.target"} {
+		if _, _, err := s.SendMessage(SendMessageInput{
+			From:      "managerd",
+			To:        target,
+			RequestID: "rid-" + target,
+			Type:      MessageTypeInform,
+			Body:      "control-plane probe",
+		}); err != nil {
+			t.Fatalf("control-plane send to %s: %v", target, err)
+		}
+	}
+
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "legacy-agent", Mode: AgentModePull}); err == nil {
+		t.Fatal("unlisted unprefixed identity registered in strict mode")
+	}
+}
+
+func TestScopedAgentCanAddressConfiguredControlPlaneQueue(t *testing.T) {
+	var logs bytes.Buffer
+	s := NewStore(Config{
+		NamespaceMode:      NamespaceModeStrict,
+		ControlPlaneAgents: []string{"managerd"},
+		Logger:             log.New(&logs, "", 0),
+	})
+	mustRegisterScoped(t, s, "managerd", nil, nil)
+	mustRegisterScoped(t, s, "personal.sender", nil, nil)
+
+	message, _, err := s.SendMessage(SendMessageInput{
+		From:      "personal.sender",
+		To:        "managerd",
+		RequestID: "rid-control-plane",
+		Type:      MessageTypeInform,
+		Body:      "terminal notification",
+	})
+	if err != nil {
+		t.Fatalf("send to control-plane queue: %v", err)
+	}
+	events, _, err := s.PollInbox(PollInboxInput{AgentID: "managerd", Wait: 0})
+	if err != nil {
+		t.Fatalf("poll control-plane queue: %v", err)
+	}
+	if len(events) != 1 || events[0].MessageID != message.MessageID {
+		t.Fatalf("control-plane events = %#v", events)
+	}
+}
+
+func TestNamespacedControlPlaneConfigurationDoesNotEscalate(t *testing.T) {
+	var logs bytes.Buffer
+	s := NewStore(Config{
+		NamespaceMode:      NamespaceModeStrict,
+		ControlPlaneAgents: []string{"personal.admin"},
+		Logger:             log.New(&logs, "", 0),
+	})
+	mustRegisterScoped(t, s, "personal.admin", nil, nil)
+	mustRegisterScoped(t, s, "ucla.target", nil, nil)
+	if _, _, err := s.SendMessage(SendMessageInput{
+		From:      "personal.admin",
+		To:        "ucla.target",
+		RequestID: "rid-no-escalation",
+		Type:      MessageTypeInform,
+		Body:      "blocked",
+	}); err == nil {
+		t.Fatal("namespaced control-plane configuration escalated scope")
+	}
+}
+
 func TestCompatLegacyIDCannotCrossScope(t *testing.T) {
 	var logs bytes.Buffer
 	s := newScopeTestStore(&logs)

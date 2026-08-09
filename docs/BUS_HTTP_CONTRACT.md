@@ -8,7 +8,7 @@ read_when:
 
 # Bus HTTP Contract
 
-Last updated: 2026-07-25
+Last updated: 2026-08-08
 
 Purpose: preserve the extracted bus surface in `pinakes`.
 
@@ -166,9 +166,16 @@ This doc describes the extracted bus contract as implemented by:
 ## Auth Rules
 
 - Agent registration requires a non-empty `secret`.
-- Agent IDs are also queue names and are moving to `personal.`, `ucla.`, or `shared.` prefixes. During the default `BUS_NAMESPACE_MODE=compat` migration window, legacy unprefixed IDs are accepted and assigned `BUS_LEGACY_SCOPE`. In `BUS_NAMESPACE_MODE=strict`, unprefixed IDs are rejected.
+- Agent IDs are also queue names and are moving to `personal.`, `ucla.`, or `shared.` prefixes. During the default `BUS_NAMESPACE_MODE=compat` migration window, legacy unprefixed IDs are accepted and assigned `BUS_LEGACY_SCOPE`. In `BUS_NAMESPACE_MODE=strict`, unprefixed IDs are rejected except for identities explicitly listed in `CONTROL_PLANE_AGENTS`.
 - Agent registration tolerates `allowed_scopes` (`personal`, `ucla`, `shared`) and `shared_grants` (`shared`) claims for compatibility and validation, but callers cannot define their own policy. Effective scopes are assigned server-side from the namespace prefix on `agent_id`.
 - Effective `shared.*` access is assigned server-side through `SHARED_GRANT_AGENTS`; registration-body `shared_grants` claims do not grant access.
+- `CONTROL_PLANE_AGENTS` is a server-authoritative, comma-separated list of
+  unprefixed trusted-infrastructure identities. Listed identities may register
+  unprefixed in strict mode and receive all three effective scopes
+  (`personal`, `ucla`, and `shared`). They may use their own unprefixed queues,
+  and scoped agents may address those configured queues. Registration claims
+  cannot create control-plane privilege, names are never hardcoded, and an
+  empty list grants no exception.
 - Publishing to `personal.*` or `ucla.*` requires that scope in the sender identity's `allowed_scopes`.
 - Publishing to or subscribing as `shared.*` requires an explicit `shared_grants: ["shared"]`; `allowed_scopes: ["shared"]` alone is not sufficient.
 - Scope denials are logged with action, identity, resource, and reason.
@@ -256,6 +263,10 @@ This doc describes the extracted bus contract as implemented by:
 - `SHARED_GRANT_AGENTS`
   - comma-separated agent IDs that receive explicit `shared.*` access
   - empty/unset means no identity receives `shared.*` access from registration claims alone
+- `CONTROL_PLANE_AGENTS`
+  - comma-separated unprefixed trusted-infrastructure agent IDs
+  - listed identities may register in strict mode and receive `personal`, `ucla`, and `shared` access
+  - prefixed entries fail process startup; empty/unset means strict mode has no unprefixed exceptions
 - `MAX_BODY_BYTES`
   - maximum request body size in bytes for all POST endpoints
   - default: `2097152` (2 MiB); `0` or negative disables the cap

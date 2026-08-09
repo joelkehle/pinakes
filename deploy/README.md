@@ -22,8 +22,11 @@ tokens, passwords, agent secrets, or other credentials to them.
 The v0.4.0 compatibility rollout also keeps namespace classification explicit
 per authority: JK uses `compat` / `personal`; UCLA uses `compat` / `ucla`.
 The Compose file requires both values so a JK deployment cannot silently
-inherit the server's UCLA compatibility default. Shared grants remain empty
-unless a separately approved identity is named.
+inherit the server's UCLA compatibility default. Shared grants and
+control-plane agents remain empty unless separately approved identities are
+named. The unified strict-mode rehearsal and eventual Joel-world deployment
+use `CONTROL_PLANE_AGENTS=managerd`; the current separate compatibility
+templates do not grant that privilege.
 
 ## Phase 1: Read-Only Host Inventory
 

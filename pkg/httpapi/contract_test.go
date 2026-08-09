@@ -71,6 +71,64 @@ func newContractServerWithEnv(t *testing.T, env map[string]string) http.Handler 
 	return newContractServer()
 }
 
+func TestStrictModeControlPlaneRegistrationContract(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	cfg := contractConfig(now)
+	cfg.NamespaceMode = bus.NamespaceModeStrict
+	cfg.ControlPlaneAgents = []string{"managerd"}
+	handler := NewServer(bus.NewStore(cfg))
+
+	registration := map[string]any{
+		"agent_id": "managerd",
+		"mode":     "pull",
+		"ttl":      60,
+		"secret":   "synthetic-manager-secret",
+	}
+	body, err := json.Marshal(registration)
+	if err != nil {
+		t.Fatalf("marshal registration: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/agents/register", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("control-plane registration status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var listed struct {
+		Agents []bus.Agent `json:"agents"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode agents: %v", err)
+	}
+	if len(listed.Agents) != 1 || listed.Agents[0].AgentID != "managerd" {
+		t.Fatalf("agents = %#v", listed.Agents)
+	}
+	if got := strings.Join(listed.Agents[0].AllowedScopes, ","); got != "personal,ucla,shared" {
+		t.Fatalf("allowed scopes = %q", got)
+	}
+	if got := strings.Join(listed.Agents[0].SharedGrants, ","); got != "shared" {
+		t.Fatalf("shared grants = %q", got)
+	}
+
+	registration["agent_id"] = "unlisted-control-plane"
+	body, _ = json.Marshal(registration)
+	request = httptest.NewRequest(http.MethodPost, "/v1/agents/register", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unlisted unprefixed registration status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func doJSON(t *testing.T, c *http.Client, method, url string, body any, headers map[string]string) *http.Response {
 	t.Helper()
 	var r io.Reader

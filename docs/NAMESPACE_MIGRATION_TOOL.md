@@ -35,6 +35,13 @@ go run ./cmd/pinakes-migrate \
   --apply
 ```
 
+If the selected manifest contains a control-plane row, set the reviewed
+deployment policy for every dry-run and apply:
+
+```bash
+export CONTROL_PLANE_AGENTS=managerd
+```
+
 `--authority` is binding. A run selects only manifest rows with that
 `source_authority`, and a single run never touches both authorities. A JK copy
 cannot use the UCLA half of a split pair to satisfy manifest completeness.
@@ -44,7 +51,7 @@ cannot use the UCLA half of a split pair to satisfy manifest completeness.
 The manifest is UTF-8 RFC 4180 CSV. Its header and order are exact:
 
 ```csv
-source_authority,source_id,target_id,disposition,owner_repo,evidence
+source_authority,source_id,target_id,disposition,owner_repo,evidence,control_plane
 ```
 
 Extra, missing, reordered, or duplicate columns are refused. Every field is
@@ -57,6 +64,7 @@ contain control characters.
 - `disposition`: exactly `migrate`, `retire`, `split`, or `unchanged`.
 - `owner_repo`: owning repository recorded for review.
 - `evidence`: synthetic or private-manifest evidence recorded for review.
+- `control_plane`: exactly `true` or `false`.
 
 `(source_authority, source_id)` must be unique. Within one authority, two
 different sources may not map to the same target.
@@ -67,8 +75,16 @@ For `migrate`, `retire`, and `split`, the complete legacy ID is preserved:
 - UCLA: `legacy-id` and `ucla.legacy-id`.
 
 The pair is accepted in either direction so an inverted manifest is an exact
-undo plan. `unchanged` requires identical source and target values with an
-existing `personal.`, `ucla.`, or `shared.` namespace.
+undo plan. An ordinary `unchanged` row requires identical source and target
+values with an existing `personal.`, `ucla.`, or `shared.` namespace.
+
+A control-plane exception is represented only by an unprefixed `unchanged` row
+with identical source and target IDs and `control_plane=true`. Marked rows are
+cross-validated against `CONTROL_PLANE_AGENTS` for the selected authority:
+every marked identity must be configured, and every configured identity must
+have a marked row. A mismatch refuses before the database is opened. All other
+rows use `control_plane=false`; a marker on a rename or namespaced identity is
+refused.
 
 An authority-scoped manifest may enumerate an identity from the other
 authority only as `unchanged`, with `target_id` equal to `source_id`. The row
@@ -109,7 +125,7 @@ untouched rows keep their exact original bytes.
 
 Dry-run opens the database with `mode=ro`. Apply uses one `BEGIN IMMEDIATE`
 read-write transaction: all validation and database inspection completes
-before the first update, and any refusal rolls back without a write. The seven
+before the first update, and any refusal rolls back without a write. The eight
 manifest/database-content preflight refusal conditions are:
 
 - an identity not named as a source or already-applied target under the
@@ -120,6 +136,8 @@ manifest/database-content preflight refusal conditions are:
 - invalid participants JSON;
 - any manifest attempt to expand the rewrite surface;
 - any attempted mutation of a foreign-authority identity.
+- any disagreement between marked control-plane rows and
+  `CONTROL_PLANE_AGENTS`.
 
 An already-applied target is recognized only through a row selected for the
 declared authority. This makes a second apply a no-op without weakening
@@ -151,3 +169,26 @@ rows.
 Statuses are `ready` (successful dry-run), `applied`, `no-op`, or `refused`.
 The report never includes message content, secrets, private metadata,
 attachments, callback URLs, evidence text, or free-text delivery errors.
+
+## Synthetic fixture rehearsal
+
+`pinakes-migrate-fixture` creates a new schema-true SQLite database through the
+real Pinakes store API. It derives identities from one authority's manifest
+rows and generates only fabricated registrations, secrets, conversations,
+messages, deliveries, cursors, and idempotency receipts. It refuses to
+overwrite an existing destination.
+
+`pinakes-manifest-invert` writes an exact, revalidated inverse manifest to a new
+file. `pinakes-manifest-allowlist` deterministically emits the non-retired
+target identities. The repository script combines these tools into the local
+dry-run/apply/inverse rehearsal:
+
+```bash
+CONTROL_PLANE_AGENTS=managerd \
+  ./scripts/rehearse-namespace-migration.sh \
+  rehearsal/issue15/namespace-manifest.csv \
+  /tmp/pinakes-issue15-rehearsal
+```
+
+This script is for locally generated fixtures only. Fleet-side operators use
+the runbook and real snapshot working copies that never leave fleet machines.

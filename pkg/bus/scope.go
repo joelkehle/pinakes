@@ -10,6 +10,12 @@ var validScopes = map[Scope]struct{}{
 	ScopeShared:   {},
 }
 
+var allScopeNames = []string{
+	string(ScopePersonal),
+	string(ScopeUCLA),
+	string(ScopeShared),
+}
+
 func ScopeOfName(name string) (Scope, bool) {
 	name = strings.TrimSpace(name)
 	prefix, _, ok := strings.Cut(name, ".")
@@ -87,11 +93,40 @@ func agentAllowedScopes(agentID string) []string {
 }
 
 func (s *Store) agentAllowedScopes(agentID string) []string {
+	if s.isControlPlaneAgent(agentID) {
+		return cloneStrings(allScopeNames)
+	}
 	scope, ok := s.scopeOfName(agentID)
 	if !ok {
 		return nil
 	}
 	return []string{string(scope)}
+}
+
+func (s *Store) isControlPlaneAgent(agentID string) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return false
+	}
+	// The exception exists only for unprefixed identities. A mistakenly
+	// configured namespaced identity must not gain cross-scope privilege.
+	if strings.Contains(agentID, ".") {
+		return false
+	}
+	for _, raw := range s.cfg.ControlPlaneAgents {
+		if strings.TrimSpace(raw) == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) acceptsName(name string) bool {
+	if s.isControlPlaneAgent(name) {
+		return true
+	}
+	_, ok := s.scopeOfName(name)
+	return ok
 }
 
 func (s *Store) agentHasScope(agentID string, scope Scope) bool {
@@ -107,6 +142,9 @@ func (s *Store) agentSharedGrants(agentID string) []string {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		return nil
+	}
+	if s.isControlPlaneAgent(agentID) {
+		return []string{string(ScopeShared)}
 	}
 	for _, raw := range s.cfg.SharedGrantAgents {
 		allowed := strings.TrimSpace(raw)

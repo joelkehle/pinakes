@@ -10,16 +10,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type Options struct {
-	DBPath          string
-	Authority       Authority
-	Apply           bool
-	AcknowledgeCopy bool
+	DBPath             string
+	Authority          Authority
+	Apply              bool
+	AcknowledgeCopy    bool
+	ControlPlaneAgents []string
 }
 
 type mapping struct {
@@ -55,6 +57,9 @@ func Run(ctx context.Context, manifest Manifest, options Options) (Report, error
 	selected := selectMappings(manifest, options.Authority, &report)
 	if len(selected) == 0 {
 		return reject(report, "manifest_authority", "manifest", "manifest has no rows for the declared authority")
+	}
+	if err := validateControlPlaneAgreement(selected, options.ControlPlaneAgents); err != nil {
+		return rejectFromError(report, err)
 	}
 	database, err := openExistingDB(options.DBPath, options.Apply)
 	if err != nil {
@@ -113,6 +118,45 @@ func Run(ctx context.Context, manifest Manifest, options Options) (Report, error
 	committed = true
 	report.Status = "applied"
 	return report, nil
+}
+
+func validateControlPlaneAgreement(mappings []*mapping, configured []string) error {
+	manifestIDs := map[string]struct{}{}
+	for _, item := range mappings {
+		if item.ControlPlane {
+			manifestIDs[item.SourceID] = struct{}{}
+		}
+	}
+	configuredIDs := map[string]struct{}{}
+	for _, raw := range configured {
+		agentID := strings.TrimSpace(raw)
+		if agentID == "" {
+			continue
+		}
+		if strings.Contains(agentID, ".") {
+			return refuse("control_plane_config", "CONTROL_PLANE_AGENTS", "control-plane identities must be unprefixed")
+		}
+		configuredIDs[agentID] = struct{}{}
+	}
+	for agentID := range manifestIDs {
+		if _, ok := configuredIDs[agentID]; !ok {
+			return refuse(
+				"control_plane_mismatch",
+				"manifest",
+				fmt.Sprintf("control-plane identity %q is absent from CONTROL_PLANE_AGENTS", agentID),
+			)
+		}
+	}
+	for agentID := range configuredIDs {
+		if _, ok := manifestIDs[agentID]; !ok {
+			return refuse(
+				"control_plane_mismatch",
+				"CONTROL_PLANE_AGENTS",
+				fmt.Sprintf("configured control-plane identity %q has no marked manifest row for this authority", agentID),
+			)
+		}
+	}
+	return nil
 }
 
 func selectMappings(manifest Manifest, authority Authority, report *Report) []*mapping {
