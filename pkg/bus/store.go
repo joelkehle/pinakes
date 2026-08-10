@@ -634,6 +634,36 @@ func (s *Store) enqueuePushJobLocked(job pushJob) string {
 	}
 }
 
+// finishAcceptance releases the store lock and returns the sender's response
+// path without waiting on any delivery side-effect. The message is already
+// durably committed and delivered by the time an acceptance completes; the only
+// remaining work is best-effort delivery bookkeeping (a push receipt DB write
+// via job.onFailure when the push could not be enqueued). Running that write
+// inline in the caller's goroutine coupled the HTTP send response to the
+// delivery subsystem's lock/connection availability, so a saturated delivery
+// path (dead/slow callback target flooding the single-connection writer) could
+// stall an already-committed send's response (issue #26). Dispatch it on a
+// tracked background goroutine instead.
+//
+// The caller must hold s.mu; finishAcceptance unlocks it. The push-generation
+// bookkeeping (pushClosed check + pushWG.Add) is performed under s.mu to match
+// enqueuePushJobLocked's invariant, so shutdown never races WaitGroup reuse.
+func (s *Store) finishAcceptance(enqueueFailure *pushJob, reason string) {
+	var runFailure func()
+	if enqueueFailure != nil && enqueueFailure.onFailure != nil && !s.pushClosed {
+		s.pushWG.Add(1)
+		job := enqueueFailure
+		runFailure = func() {
+			defer s.pushWG.Done()
+			job.onFailure(0, reason)
+		}
+	}
+	s.mu.Unlock()
+	if runFailure != nil {
+		go runFailure()
+	}
+}
+
 func (s *Store) sendPushCallback(job pushJob) {
 	blob, err := json.Marshal(job.payload)
 	if err != nil {
@@ -1215,10 +1245,7 @@ func (s *Store) sendMessage(input SendMessageInput, commit func(*sendAcceptance)
 	var enqueueFailure *pushJob
 	var enqueueFailureReason string
 	defer func() {
-		s.mu.Unlock()
-		if enqueueFailure != nil && enqueueFailure.onFailure != nil {
-			enqueueFailure.onFailure(0, enqueueFailureReason)
-		}
+		s.finishAcceptance(enqueueFailure, enqueueFailureReason)
 	}()
 	s.sweepLocked(now)
 
@@ -1740,10 +1767,7 @@ func (s *Store) inject(input InjectInput, commit func(*sendAcceptance) error) (*
 	var enqueueFailure *pushJob
 	var enqueueFailureReason string
 	defer func() {
-		s.mu.Unlock()
-		if enqueueFailure != nil && enqueueFailure.onFailure != nil {
-			enqueueFailure.onFailure(0, enqueueFailureReason)
-		}
+		s.finishAcceptance(enqueueFailure, enqueueFailureReason)
 	}()
 	s.sweepLocked(now)
 

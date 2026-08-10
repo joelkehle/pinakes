@@ -40,6 +40,12 @@ type SQLiteStore struct {
 	// non-nil error forces a rollback so tests can prove all-or-nothing
 	// semantics. Production callers never set this.
 	testHookBeforeCommit func() error
+
+	// testHookPushReceipt, if non-nil, runs at the start of recordPushFailure
+	// before its receipt write (and while holding no lock). Tests use it to hold
+	// a delivery receipt write open and prove the send response does not wait on
+	// it. Production callers never set this.
+	testHookPushReceipt func()
 }
 
 const sqliteSchema = `
