@@ -302,6 +302,12 @@ func (s *SQLiteStore) recordPushSuccess(messageID string, attempts int) {
 }
 
 func (s *SQLiteStore) recordPushFailure(messageID string, attempts int, failure string) {
+	s.mu.Lock()
+	hook := s.testHookPushReceipt
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	now := s.inner.now()
 	nextAttempt := now.Add(pushCycleBackoff(s.inner.cfg, attempts))
 	if len(failure) > 200 {
