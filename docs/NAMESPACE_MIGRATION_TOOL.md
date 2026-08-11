@@ -81,8 +81,9 @@ values with an existing `personal.`, `ucla.`, or `shared.` namespace.
 A control-plane exception is represented only by an unprefixed `unchanged` row
 with identical source and target IDs and `control_plane=true`. Marked rows are
 cross-validated against `CONTROL_PLANE_AGENTS` for the selected authority:
-every marked identity must be configured, and every configured identity must
-have a marked row. A mismatch refuses before the database is opened. All other
+every marked identity must be configured. Configured identities without a row
+for the selected authority do not couple that authority's manifest to future
+runtime policy. A mismatch refuses before the database is opened. All other
 rows use `control_plane=false`; a marker on a rename or namespaced identity is
 refused.
 
@@ -136,8 +137,7 @@ manifest/database-content preflight refusal conditions are:
 - invalid participants JSON;
 - any manifest attempt to expand the rewrite surface;
 - any attempted mutation of a foreign-authority identity.
-- any disagreement between marked control-plane rows and
-  `CONTROL_PLANE_AGENTS`.
+- any marked control-plane row absent from `CONTROL_PLANE_AGENTS`.
 
 An already-applied target is recognized only through a row selected for the
 declared authority. This makes a second apply a no-op without weakening

@@ -2,6 +2,7 @@ package bus
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,7 +71,10 @@ type PersistentStore struct {
 }
 
 func NewPersistentStore(path string, cfg Config) (*PersistentStore, error) {
-	inner := NewStore(cfg)
+	inner, err := NewStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid store configuration: %w", err)
+	}
 	ps := &PersistentStore{
 		inner:        inner,
 		path:         path,

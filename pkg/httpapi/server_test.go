@@ -32,7 +32,7 @@ func newServerForTestWithEnv(t *testing.T, env map[string]string) *Server {
 		t.Setenv(key, value)
 	}
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
-	store := bus.NewStore(bus.Config{
+	store := bus.MustNewStore(bus.Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,
@@ -321,7 +321,7 @@ func TestNewServerFromEnvFailsWhenAllowlistFileMissing(t *testing.T) {
 	t.Setenv("ALLOWLIST_FILE", missingPath)
 
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
-	store := bus.NewStore(bus.Config{
+	store := bus.MustNewStore(bus.Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,

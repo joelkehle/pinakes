@@ -196,7 +196,7 @@ jk,managerd,managerd,unchanged,example/manager,synthetic control plane,true
 	}
 }
 
-func TestConfiguredControlPlaneRequiresMarkedAuthorityRow(t *testing.T) {
+func TestConfiguredControlPlaneDoesNotRequireMarkedAuthorityRow(t *testing.T) {
 	path := createFixtureDB(t)
 	report, err := Run(t.Context(), loadManifestFixture(t, "success_manifest.csv"), Options{
 		DBPath:             path,
@@ -204,11 +204,11 @@ func TestConfiguredControlPlaneRequiresMarkedAuthorityRow(t *testing.T) {
 		AcknowledgeCopy:    true,
 		ControlPlaneAgents: []string{"managerd"},
 	})
-	if code := refusalCode(t, err); code != "control_plane_mismatch" {
-		t.Fatalf("refusal code = %q, want control_plane_mismatch", code)
+	if err != nil {
+		t.Fatalf("configured identity outside this authority should not refuse: %v", err)
 	}
-	if report.Status != "refused" {
-		t.Fatalf("report status = %q, want refused", report.Status)
+	if report.Status != "ready" {
+		t.Fatalf("report status = %q, want ready", report.Status)
 	}
 }
 

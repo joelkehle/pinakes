@@ -9,7 +9,7 @@ import (
 )
 
 func TestPushQueueDefaults(t *testing.T) {
-	s := NewStore(Config{})
+	s := MustNewStore(Config{})
 
 	if got := cap(s.pushQueue); got != 256 {
 		t.Fatalf("push queue cap=%d want=256", got)
@@ -46,7 +46,7 @@ func TestPushQueueDropsWhenFull(t *testing.T) {
 		callback.Close()
 	})
 
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		PushMaxAttempts: 1,
 		PushBaseBackoff: time.Millisecond,
 		PushQueueSize:   queueSize,

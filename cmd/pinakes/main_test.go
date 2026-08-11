@@ -67,20 +67,3 @@ func TestParseNamespaceConfig(t *testing.T) {
 		})
 	}
 }
-
-func TestParseControlPlaneAgents(t *testing.T) {
-	agents, err := parseControlPlaneAgents(" managerd,observer,managerd ")
-	if err != nil {
-		t.Fatalf("parse control-plane agents: %v", err)
-	}
-	if got := strings.Join(agents, ","); got != "managerd,observer" {
-		t.Fatalf("agents = %q", got)
-	}
-	if _, err := parseControlPlaneAgents("personal.managerd"); err == nil ||
-		!strings.Contains(err.Error(), "CONTROL_PLANE_AGENTS") {
-		t.Fatalf("expected prefixed identity refusal, got %v", err)
-	}
-	if _, err := parseControlPlaneAgents("ops.managerd"); err == nil {
-		t.Fatal("expected dotted control-plane identity refusal")
-	}
-}

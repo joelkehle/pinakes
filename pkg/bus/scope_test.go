@@ -2,6 +2,7 @@ package bus
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"slices"
@@ -10,9 +11,15 @@ import (
 	"time"
 )
 
+const testControlPlaneSecret = "synthetic-manager-secret"
+
+func testControlPlaneHashes(agentID, secret string) map[string][sha256.Size]byte {
+	return map[string][sha256.Size]byte{agentID: sha256.Sum256([]byte(secret))}
+}
+
 func newScopeTestStore(logBuf *bytes.Buffer, sharedGrantAgents ...string) *Store {
 	logger := log.New(logBuf, "", 0)
-	return NewStore(Config{
+	return MustNewStore(Config{
 		Clock: func() time.Time {
 			return time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
 		},
@@ -23,8 +30,13 @@ func newScopeTestStore(logBuf *bytes.Buffer, sharedGrantAgents ...string) *Store
 
 func mustRegisterScoped(t *testing.T, s *Store, agentID string, scopes, grants []string) {
 	t.Helper()
+	secret := ""
+	if s.isConfiguredControlPlaneAgent(agentID) {
+		secret = testControlPlaneSecret
+	}
 	if _, err := s.RegisterAgent(RegisterAgentInput{
 		AgentID:       agentID,
+		Secret:        secret,
 		AllowedScopes: scopes,
 		SharedGrants:  grants,
 		Mode:          AgentModePull,
@@ -100,7 +112,7 @@ func TestUCLAPublishToPersonalDeniedAndLogged(t *testing.T) {
 
 func TestUnprefixedQueueNamesRejected(t *testing.T) {
 	var logs bytes.Buffer
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		NamespaceMode: NamespaceModeStrict,
 		Logger:        log.New(&logs, "", 0),
 		Clock: func() time.Time {
@@ -158,7 +170,7 @@ func TestCompatModeAcceptsLegacyIDsForRegisterSendAndPoll(t *testing.T) {
 
 func TestStrictModeRejectsLegacyIDs(t *testing.T) {
 	var logs bytes.Buffer
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		NamespaceMode: NamespaceModeStrict,
 		Logger:        log.New(&logs, "", 0),
 		Clock: func() time.Time {
@@ -186,11 +198,12 @@ func TestStrictModeRejectsLegacyIDs(t *testing.T) {
 
 func TestStrictModeControlPlaneAgentHasAllScopes(t *testing.T) {
 	var logs bytes.Buffer
-	s := NewStore(Config{
-		NamespaceMode:      NamespaceModeStrict,
-		ControlPlaneAgents: []string{"managerd"},
-		SharedGrantAgents:  []string{"shared.target"},
-		Logger:             log.New(&logs, "", 0),
+	s := MustNewStore(Config{
+		NamespaceMode:                 NamespaceModeStrict,
+		ControlPlaneAgents:            []string{"managerd"},
+		ControlPlaneAgentSecretHashes: testControlPlaneHashes("managerd", testControlPlaneSecret),
+		SharedGrantAgents:             []string{"shared.target"},
+		Logger:                        log.New(&logs, "", 0),
 		Clock: func() time.Time {
 			return time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
 		},
@@ -234,10 +247,11 @@ func TestStrictModeControlPlaneAgentHasAllScopes(t *testing.T) {
 
 func TestScopedAgentCanAddressConfiguredControlPlaneQueue(t *testing.T) {
 	var logs bytes.Buffer
-	s := NewStore(Config{
-		NamespaceMode:      NamespaceModeStrict,
-		ControlPlaneAgents: []string{"managerd"},
-		Logger:             log.New(&logs, "", 0),
+	s := MustNewStore(Config{
+		NamespaceMode:                 NamespaceModeStrict,
+		ControlPlaneAgents:            []string{"managerd"},
+		ControlPlaneAgentSecretHashes: testControlPlaneHashes("managerd", testControlPlaneSecret),
+		Logger:                        log.New(&logs, "", 0),
 	})
 	mustRegisterScoped(t, s, "managerd", nil, nil)
 	mustRegisterScoped(t, s, "personal.sender", nil, nil)
@@ -262,22 +276,75 @@ func TestScopedAgentCanAddressConfiguredControlPlaneQueue(t *testing.T) {
 }
 
 func TestNamespacedControlPlaneConfigurationDoesNotEscalate(t *testing.T) {
-	var logs bytes.Buffer
-	s := NewStore(Config{
+	_, err := NewStore(Config{
 		NamespaceMode:      NamespaceModeStrict,
 		ControlPlaneAgents: []string{"personal.admin"},
-		Logger:             log.New(&logs, "", 0),
+		ControlPlaneAgentSecretHashes: testControlPlaneHashes(
+			"personal.admin",
+			testControlPlaneSecret,
+		),
 	})
-	mustRegisterScoped(t, s, "personal.admin", nil, nil)
-	mustRegisterScoped(t, s, "ucla.target", nil, nil)
-	if _, _, err := s.SendMessage(SendMessageInput{
-		From:      "personal.admin",
-		To:        "ucla.target",
-		RequestID: "rid-no-escalation",
-		Type:      MessageTypeInform,
-		Body:      "blocked",
-	}); err == nil {
-		t.Fatal("namespaced control-plane configuration escalated scope")
+	if err == nil {
+		t.Fatal("namespaced control-plane configuration was accepted")
+	}
+}
+
+func TestControlPlaneCredentialBindingAppliesInCompatAndStrict(t *testing.T) {
+	for _, mode := range []NamespaceMode{NamespaceModeCompat, NamespaceModeStrict} {
+		t.Run(string(mode), func(t *testing.T) {
+			s := MustNewStore(Config{
+				NamespaceMode:                 mode,
+				LegacyScope:                   ScopePersonal,
+				ControlPlaneAgents:            []string{"managerd"},
+				ControlPlaneAgentSecretHashes: testControlPlaneHashes("managerd", testControlPlaneSecret),
+			})
+			if _, err := s.RegisterAgent(RegisterAgentInput{
+				AgentID: "managerd",
+				Secret:  "wrong-secret",
+				Mode:    AgentModePull,
+			}); err == nil {
+				t.Fatal("wrong credential claimed managerd")
+			}
+			if len(s.ListAgents("")) != 0 {
+				t.Fatal("rejected registration mutated agent state")
+			}
+			if _, err := s.RegisterAgent(RegisterAgentInput{
+				AgentID: "managerd",
+				Mode:    AgentModePull,
+			}); err == nil {
+				t.Fatal("missing credential claimed managerd")
+			}
+			mustRegisterScoped(t, s, "managerd", nil, nil)
+			var manager Agent
+			for _, agent := range s.ListAgents("") {
+				if agent.AgentID == "managerd" {
+					manager = agent
+				}
+			}
+			want := "personal"
+			if mode == NamespaceModeStrict {
+				want = "personal,ucla,shared"
+			}
+			if got := strings.Join(manager.AllowedScopes, ","); got != want {
+				t.Fatalf("allowed scopes = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestControlPlaneConfigurationFailsClosed(t *testing.T) {
+	tests := []Config{
+		{ControlPlaneAgents: []string{"managerd"}},
+		{ControlPlaneAgentSecretHashes: testControlPlaneHashes("managerd", testControlPlaneSecret)},
+		{
+			ControlPlaneAgents:            []string{"managerd"},
+			ControlPlaneAgentSecretHashes: testControlPlaneHashes("observer", testControlPlaneSecret),
+		},
+	}
+	for _, cfg := range tests {
+		if _, err := NewStore(cfg); err == nil {
+			t.Fatalf("invalid config accepted: %#v", cfg)
+		}
 	}
 }
 

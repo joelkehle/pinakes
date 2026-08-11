@@ -8,7 +8,7 @@ import (
 )
 
 func newRetentionStore(clock func() time.Time) *Store {
-	return NewStore(Config{
+	return MustNewStore(Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      48 * time.Hour,
@@ -162,7 +162,7 @@ func TestPollInboxReclaimsDeliveredEvents(t *testing.T) {
 // not just event count, and that the newest event is always kept.
 func TestInboxByteBudgetEvictsOldest(t *testing.T) {
 	current := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		MaxInboxBytesPerAgent: 300,
 		Clock:                 func() time.Time { return current },
 	})
@@ -197,7 +197,7 @@ func TestInboxByteBudgetEvictsOldest(t *testing.T) {
 // payload bytes, keeping at least the newest event.
 func TestObserveByteBudgetEvictsOldest(t *testing.T) {
 	current := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		MaxObserveBytes: 1,
 		Clock:           func() time.Time { return current },
 	})

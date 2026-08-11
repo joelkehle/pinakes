@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -103,22 +104,35 @@ func (s *Store) agentAllowedScopes(agentID string) []string {
 	return []string{string(scope)}
 }
 
-func (s *Store) isControlPlaneAgent(agentID string) bool {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
-		return false
-	}
-	// The exception exists only for unprefixed identities. A mistakenly
-	// configured namespaced identity must not gain cross-scope privilege.
-	if strings.Contains(agentID, ".") {
-		return false
-	}
-	for _, raw := range s.cfg.ControlPlaneAgents {
-		if strings.TrimSpace(raw) == agentID {
-			return true
+// NormalizeControlPlaneAgents validates the shared configuration contract and
+// returns unique identities in declaration order.
+func NormalizeControlPlaneAgents(agents []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	normalized := []string{}
+	for _, raw := range agents {
+		agentID := strings.TrimSpace(raw)
+		if agentID == "" {
+			continue
 		}
+		if strings.Contains(agentID, ".") {
+			return nil, fmt.Errorf("control-plane identity %q must be unprefixed", agentID)
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		normalized = append(normalized, agentID)
 	}
-	return false
+	return normalized, nil
+}
+
+func (s *Store) isConfiguredControlPlaneAgent(agentID string) bool {
+	_, ok := s.controlPlaneAgents[strings.TrimSpace(agentID)]
+	return ok
+}
+
+func (s *Store) isControlPlaneAgent(agentID string) bool {
+	return s.cfg.NamespaceMode == NamespaceModeStrict && s.isConfiguredControlPlaneAgent(agentID)
 }
 
 func (s *Store) acceptsName(name string) bool {

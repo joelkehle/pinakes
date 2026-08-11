@@ -157,7 +157,10 @@ type ObserveEvent struct {
 }
 
 type RegisterAgentInput struct {
-	AgentID       string
+	AgentID string
+	// Secret is used transiently to bind configured control-plane identities
+	// before registration mutates state. It is never included in Agent output.
+	Secret        string
 	AllowedScopes []string
 	SharedGrants  []string
 	Capabilities  []string

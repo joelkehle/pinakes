@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/joelkehle/pinakes/internal/configutil"
 	"github.com/joelkehle/pinakes/pkg/bus"
 	"github.com/joelkehle/pinakes/pkg/httpapi"
 )
@@ -47,12 +48,12 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "stat empty-store destination: %v\n", err)
 		return 1
 	}
-	controlPlaneAgents := csvValues(os.Getenv("CONTROL_PLANE_AGENTS"))
+	controlPlaneAgents := configutil.SplitCSV(os.Getenv("CONTROL_PLANE_AGENTS"))
 	if len(controlPlaneAgents) == 0 {
 		fmt.Fprintln(os.Stderr, "CONTROL_PLANE_AGENTS must name the reviewed rehearsal control plane")
 		return 1
 	}
-	agents := csvValues(*agentsRaw)
+	agents := configutil.SplitCSV(*agentsRaw)
 	agents = append(agents, controlPlaneAgents...)
 
 	store, err := bus.NewSQLiteStore(*dbPath, bus.Config{
@@ -154,14 +155,4 @@ func register(handler http.Handler, agentID, secret string) int {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response.Code
-}
-
-func csvValues(raw string) []string {
-	values := []string{}
-	for _, entry := range strings.Split(raw, ",") {
-		if value := strings.TrimSpace(entry); value != "" {
-			values = append(values, value)
-		}
-	}
-	return values
 }

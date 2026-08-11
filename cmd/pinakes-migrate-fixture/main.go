@@ -6,8 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
+	"github.com/joelkehle/pinakes/internal/configutil"
 	"github.com/joelkehle/pinakes/internal/nsmigrate"
 )
 
@@ -50,7 +50,7 @@ func run(ctx context.Context, args []string) int {
 	report, err := nsmigrate.GenerateSyntheticDB(ctx, manifest, nsmigrate.SyntheticOptions{
 		DBPath:             *dbPath,
 		Authority:          authority,
-		ControlPlaneAgents: csvEnv("CONTROL_PLANE_AGENTS"),
+		ControlPlaneAgents: configutil.SplitCSV(os.Getenv("CONTROL_PLANE_AGENTS")),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -63,14 +63,4 @@ func run(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
-}
-
-func csvEnv(name string) []string {
-	values := []string{}
-	for _, raw := range strings.Split(os.Getenv(name), ",") {
-		if value := strings.TrimSpace(raw); value != "" {
-			values = append(values, value)
-		}
-	}
-	return values
 }

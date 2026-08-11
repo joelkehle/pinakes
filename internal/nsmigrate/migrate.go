@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
+	"github.com/joelkehle/pinakes/pkg/bus"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -127,15 +127,12 @@ func validateControlPlaneAgreement(mappings []*mapping, configured []string) err
 			manifestIDs[item.SourceID] = struct{}{}
 		}
 	}
+	normalized, err := bus.NormalizeControlPlaneAgents(configured)
+	if err != nil {
+		return refuse("control_plane_config", "CONTROL_PLANE_AGENTS", err.Error())
+	}
 	configuredIDs := map[string]struct{}{}
-	for _, raw := range configured {
-		agentID := strings.TrimSpace(raw)
-		if agentID == "" {
-			continue
-		}
-		if strings.Contains(agentID, ".") {
-			return refuse("control_plane_config", "CONTROL_PLANE_AGENTS", "control-plane identities must be unprefixed")
-		}
+	for _, agentID := range normalized {
 		configuredIDs[agentID] = struct{}{}
 	}
 	for agentID := range manifestIDs {
@@ -144,15 +141,6 @@ func validateControlPlaneAgreement(mappings []*mapping, configured []string) err
 				"control_plane_mismatch",
 				"manifest",
 				fmt.Sprintf("control-plane identity %q is absent from CONTROL_PLANE_AGENTS", agentID),
-			)
-		}
-	}
-	for agentID := range configuredIDs {
-		if _, ok := manifestIDs[agentID]; !ok {
-			return refuse(
-				"control_plane_mismatch",
-				"CONTROL_PLANE_AGENTS",
-				fmt.Sprintf("configured control-plane identity %q has no marked manifest row for this authority", agentID),
 			)
 		}
 	}

@@ -2,6 +2,7 @@ package nsmigrate
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,16 +80,21 @@ func GenerateSyntheticDB(ctx context.Context, manifest Manifest, options Synthet
 	clock := func() time.Time {
 		return time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	}
+	controlPlaneHashes := map[string][sha256.Size]byte{}
+	for _, agentID := range options.ControlPlaneAgents {
+		controlPlaneHashes[agentID] = sha256.Sum256([]byte(syntheticRegistrationSecret(agentID)))
+	}
 	store, err := bus.NewSQLiteStore(options.DBPath, bus.Config{
-		Clock:                 clock,
-		NamespaceMode:         bus.NamespaceModeCompat,
-		LegacyScope:           legacyScope(options.Authority),
-		SharedGrantAgents:     sharedAgents,
-		ControlPlaneAgents:    options.ControlPlaneAgents,
-		MessageRetention:      -1,
-		MessageMaxAge:         -1,
-		ConversationRetention: -1,
-		AgentRetention:        -1,
+		Clock:                         clock,
+		NamespaceMode:                 bus.NamespaceModeCompat,
+		LegacyScope:                   legacyScope(options.Authority),
+		SharedGrantAgents:             sharedAgents,
+		ControlPlaneAgents:            options.ControlPlaneAgents,
+		ControlPlaneAgentSecretHashes: controlPlaneHashes,
+		MessageRetention:              -1,
+		MessageMaxAge:                 -1,
+		ConversationRetention:         -1,
+		AgentRetention:                -1,
 	})
 	if err != nil {
 		return report, fmt.Errorf("create synthetic sqlite store: %w", err)
@@ -117,6 +123,7 @@ func GenerateSyntheticDB(ctx context.Context, manifest Manifest, options Synthet
 		}
 		if _, err := store.RegisterAgent(bus.RegisterAgentInput{
 			AgentID:      identity,
+			Secret:       syntheticRegistrationSecret(identity),
 			Capabilities: []string{"synthetic-rehearsal"},
 			Description:  "fabricated namespace migration fixture",
 			AgentClass:   "worker",
@@ -197,6 +204,10 @@ func GenerateSyntheticDB(ctx context.Context, manifest Manifest, options Synthet
 
 	complete = true
 	return report, nil
+}
+
+func syntheticRegistrationSecret(agentID string) string {
+	return "fabricated-registration-secret:" + agentID
 }
 
 func legacyScope(authority Authority) bus.Scope {

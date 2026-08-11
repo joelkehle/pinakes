@@ -172,10 +172,18 @@ This doc describes the extracted bus contract as implemented by:
 - `CONTROL_PLANE_AGENTS` is a server-authoritative, comma-separated list of
   unprefixed trusted-infrastructure identities. Listed identities may register
   unprefixed in strict mode and receive all three effective scopes
-  (`personal`, `ucla`, and `shared`). They may use their own unprefixed queues,
-  and scoped agents may address those configured queues. Registration claims
-  cannot create control-plane privilege, names are never hardcoded, and an
-  empty list grants no exception.
+  (`personal`, `ucla`, and `shared`). Scoped agents may send new messages to a
+  configured control-plane queue, but this rendezvous is send-only: it does not
+  grant conversation create, reuse, list, read, join, or observe access.
+  Registration claims cannot create control-plane privilege, names are never
+  hardcoded, and an empty list grants no exception.
+- Every identity in `CONTROL_PLANE_AGENTS` must have exactly one matching
+  SHA-256 secret digest in `CONTROL_PLANE_AGENT_SECRET_HASHES`. Registration
+  checks the submitted secret against that digest in constant time before any
+  identity claim or store mutation. This credential binding applies in both
+  `compat` and `strict`; only unprefixed registration and three-scope privilege
+  are strict-only. Raw secrets and configured digests never appear in errors,
+  logs, or reports.
 - Publishing to `personal.*` or `ucla.*` requires that scope in the sender identity's `allowed_scopes`.
 - Publishing to or subscribing as `shared.*` requires an explicit `shared_grants: ["shared"]`; `allowed_scopes: ["shared"]` alone is not sufficient.
 - Scope denials are logged with action, identity, resource, and reason.
@@ -267,6 +275,12 @@ This doc describes the extracted bus contract as implemented by:
   - comma-separated unprefixed trusted-infrastructure agent IDs
   - listed identities may register in strict mode and receive `personal`, `ucla`, and `shared` access
   - prefixed entries fail process startup; empty/unset means strict mode has no unprefixed exceptions
+- `CONTROL_PLANE_AGENT_SECRET_HASHES`
+  - comma-separated `identity=<64-character SHA-256 hex>` entries
+  - identities must exactly match `CONTROL_PLANE_AGENTS`; missing, extra,
+    duplicate, malformed, or prefixed entries fail process startup
+  - values are secret-derived material and must be supplied through the
+    untracked deployment environment, never committed
 - `MAX_BODY_BYTES`
   - maximum request body size in bytes for all POST endpoints
   - default: `2097152` (2 MiB); `0` or negative disables the cap

@@ -155,8 +155,11 @@ configuration-driven. The bus reads unprefixed trusted identities from
 `CONTROL_PLANE_AGENTS`; those identities may register in strict mode and hold
 `personal`, `ucla`, and `shared` scopes. Matching manifest rows remain
 unprefixed and unchanged with `control_plane=true`, and the migration tool
-cross-validates the marked rows against the configured list. All other rows use
-`control_plane=false`. No identity name is hardcoded in either mechanism.
+requires each marked row to appear in the configured list. Runtime registration
+also requires a matching configured SHA-256 secret digest in both namespace
+modes; only the unprefixed exception and three-scope grant are strict-only. All
+other rows use `control_plane=false`. No identity name is hardcoded in either
+mechanism.
 
 The disposition vocabulary is closed: `migrate`, `retire`, `split`,
 `unchanged`. Any other value is a fail-closed refusal, not a new disposition;
