@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -19,6 +20,39 @@ func TestNewSQLiteStoreCreatesParentDir(t *testing.T) {
 
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("stat created sqlite db: %v", err)
+	}
+}
+
+func TestNewSQLiteStoreRejectsInvalidControlPlaneConfigurationBeforeDatabaseIO(t *testing.T) {
+	tests := []struct {
+		name   string
+		hashes map[string][sha256.Size]byte
+	}{
+		{name: "missing hash"},
+		{
+			name: "mismatched identity",
+			hashes: map[string][sha256.Size]byte{
+				"observer": sha256.Sum256([]byte("synthetic-observer-secret")),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parent := filepath.Join(t.TempDir(), "must-not-be-created")
+			dbPath := filepath.Join(parent, "bus.db")
+			store, err := NewSQLiteStore(dbPath, Config{
+				ControlPlaneAgents:            []string{"managerd"},
+				ControlPlaneAgentSecretHashes: test.hashes,
+			})
+			if err == nil {
+				store.Close()
+				t.Fatalf("expected invalid control-plane configuration to fail")
+			}
+			if _, statErr := os.Stat(parent); !os.IsNotExist(statErr) {
+				t.Fatalf("configuration failure performed database I/O: stat error = %v", statErr)
+			}
+		})
 	}
 }
 
