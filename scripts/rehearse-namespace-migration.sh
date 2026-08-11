@@ -65,6 +65,11 @@ for authority in jk ucla; do
     --authority "$authority" \
     --acknowledge-copy \
     >"$output_dir/$authority-restored-dry-run.json"
+
+  go run ./cmd/pinakes-migrate-compare \
+    --expected "$pristine" \
+    --actual "$inverse_working" \
+    >"$output_dir/$authority-inverse-comparison.json"
 done
 
 go run ./cmd/pinakes-empty-strict-rehearsal \

@@ -66,4 +66,7 @@ CONTROL_PLANE_AGENTS=managerd \
 ```
 
 The output directory must not already exist. It contains fabricated SQLite
-databases and metadata-only JSON reports; it contains no fleet data.
+databases and metadata-only JSON reports; it contains no fleet data. The script
+uses `pinakes-migrate-compare` after each inverse apply and exits nonzero unless
+the pristine and restored schemas and canonically ordered rows match across
+every table.

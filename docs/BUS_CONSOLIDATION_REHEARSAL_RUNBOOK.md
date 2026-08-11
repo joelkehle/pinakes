@@ -407,7 +407,15 @@ go run ./cmd/pinakes-migrate \
   --acknowledge-copy \
   --apply \
   >"$REHEARSAL_ROOT/reports/jk-inverse-apply.json"
+go run ./cmd/pinakes-migrate-compare \
+  --expected "$JK_SNAPSHOT" \
+  --actual "$JK_INVERSE" \
+  >"$REHEARSAL_ROOT/reports/jk-inverse-comparison.json"
 ```
+
+Require `equal=true` and the expected nine-table inventory. The comparator
+emits table names and mismatch status only; it never emits row content or
+digests. A nonzero exit blocks the rehearsal.
 
 ## 8. UCLA namespace rewrite rehearsal
 
@@ -456,6 +464,10 @@ go run ./cmd/pinakes-migrate \
   --acknowledge-copy \
   --apply \
   >"$REHEARSAL_ROOT/reports/ucla-inverse-apply.json"
+go run ./cmd/pinakes-migrate-compare \
+  --expected "$UCLA_SNAPSHOT" \
+  --actual "$UCLA_INVERSE" \
+  >"$REHEARSAL_ROOT/reports/ucla-inverse-comparison.json"
 ```
 
 ## 9. Isolated unified strict-mode boot rehearsal

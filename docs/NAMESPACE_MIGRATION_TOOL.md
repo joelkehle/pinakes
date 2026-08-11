@@ -180,8 +180,10 @@ overwrite an existing destination.
 
 `pinakes-manifest-invert` writes an exact, revalidated inverse manifest to a new
 file. `pinakes-manifest-allowlist` deterministically emits the non-retired
-target identities. The repository script combines these tools into the local
-dry-run/apply/inverse rehearsal:
+target identities. `pinakes-migrate-compare` compares schema and canonically
+ordered rows for every table without emitting row content or digests; any
+difference exits nonzero. The repository script combines these tools into the
+local dry-run/apply/inverse rehearsal:
 
 ```bash
 CONTROL_PLANE_AGENTS=managerd \
