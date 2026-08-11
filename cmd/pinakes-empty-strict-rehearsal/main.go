@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,6 +24,8 @@ type rehearsalReport struct {
 	UnlistedUnprefixedRejected bool     `json:"unlisted_unprefixed_rejected"`
 	DistinctSyntheticSecrets   bool     `json:"distinct_synthetic_secrets"`
 	ControlPlaneAllScopes      bool     `json:"control_plane_all_scopes"`
+	WrongCredentialRejected    bool     `json:"wrong_control_plane_credential_rejected"`
+	MissingCredentialRejected  bool     `json:"missing_control_plane_credential_rejected"`
 }
 
 func main() {
@@ -55,10 +58,15 @@ func run(args []string) int {
 	}
 	agents := configutil.SplitCSV(*agentsRaw)
 	agents = append(agents, controlPlaneAgents...)
+	controlPlaneHashes := map[string][sha256.Size]byte{}
+	for _, agentID := range controlPlaneAgents {
+		controlPlaneHashes[agentID] = sha256.Sum256([]byte(syntheticControlPlaneSecret(agentID)))
+	}
 
 	store, err := bus.NewSQLiteStore(*dbPath, bus.Config{
-		NamespaceMode:      bus.NamespaceModeStrict,
-		ControlPlaneAgents: controlPlaneAgents,
+		NamespaceMode:                 bus.NamespaceModeStrict,
+		ControlPlaneAgents:            controlPlaneAgents,
+		ControlPlaneAgentSecretHashes: controlPlaneHashes,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create empty strict-mode store: %v\n", err)
@@ -88,6 +96,20 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "start rehearsal handler: %v\n", err)
 		return 1
 	}
+	report.WrongCredentialRejected = true
+	report.MissingCredentialRejected = true
+	for _, agentID := range controlPlaneAgents {
+		if status := register(handler, agentID, "fabricated-wrong-control-plane-secret"); status != http.StatusUnauthorized {
+			report.WrongCredentialRejected = false
+		}
+		if status := register(handler, agentID, ""); status != http.StatusBadRequest {
+			report.MissingCredentialRejected = false
+		}
+	}
+	if len(store.ListAgents("")) != 0 {
+		fmt.Fprintln(os.Stderr, "rejected control-plane probes mutated registration state")
+		return 1
+	}
 
 	seen := map[string]struct{}{}
 	for index, agentID := range agents {
@@ -96,6 +118,11 @@ func run(args []string) int {
 		}
 		seen[agentID] = struct{}{}
 		secret := fmt.Sprintf("synthetic-registration-secret-%03d", index+1)
+		for _, controlPlaneID := range controlPlaneAgents {
+			if agentID == controlPlaneID {
+				secret = syntheticControlPlaneSecret(agentID)
+			}
+		}
 		status := register(handler, agentID, secret)
 		if status != http.StatusOK {
 			fmt.Fprintf(os.Stderr, "register %s: HTTP %d\n", agentID, status)
@@ -128,7 +155,8 @@ func run(args []string) int {
 		}
 	}
 	if !report.EmptyBeforeRegistration || !report.UnlistedUnprefixedRejected ||
-		!report.DistinctSyntheticSecrets || !report.ControlPlaneAllScopes {
+		!report.DistinctSyntheticSecrets || !report.ControlPlaneAllScopes ||
+		!report.WrongCredentialRejected || !report.MissingCredentialRejected {
 		encoded, _ := json.Marshal(report)
 		fmt.Fprintf(os.Stderr, "strict-mode rehearsal checks failed: %s\n", encoded)
 		return 1
@@ -141,6 +169,10 @@ func run(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func syntheticControlPlaneSecret(agentID string) string {
+	return "fabricated-empty-store-control-plane-secret:" + agentID
 }
 
 func register(handler http.Handler, agentID, secret string) int {

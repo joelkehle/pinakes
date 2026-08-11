@@ -23,10 +23,17 @@ The v0.4.0 compatibility rollout also keeps namespace classification explicit
 per authority: JK uses `compat` / `personal`; UCLA uses `compat` / `ucla`.
 The Compose file requires both values so a JK deployment cannot silently
 inherit the server's UCLA compatibility default. Shared grants and
-control-plane agents remain empty unless separately approved identities are
-named. The unified strict-mode rehearsal and eventual Joel-world deployment
-use `CONTROL_PLANE_AGENTS=managerd`; the current separate compatibility
-templates do not grant that privilege.
+control-plane privilege remains strict-only. Both authority templates name
+`CONTROL_PLANE_AGENTS=managerd` so the reviewed identity wiring is explicit,
+but compat mode grants it only the authority's legacy scope. Credential binding
+applies in both modes.
+
+`CONTROL_PLANE_AGENT_SECRET_HASHES` is intentionally absent from the tracked
+`.env` templates. Compose requires it from the untracked deploying environment
+using fail-closed expansion. Joel provisions the real
+`managerd=<64-character-sha256-hex>` value on Keystone before deploying a build
+that enforces this contract. Do not commit the digest or work around a missing
+value; the bus is intended to refuse startup until it is provisioned.
 
 ## Phase 1: Read-Only Host Inventory
 

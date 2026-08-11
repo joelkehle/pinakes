@@ -81,6 +81,9 @@ live-path equality; do not weaken those checks for convenience.
   information.
 - Record versions for `sqlite3`, `pinakes-migrate`, Pinakes, Go (if invoking via
   `go run`), Docker, and Docker Compose.
+- Require a Pinakes revision containing v0.4.1 commit `77fb37f` or a verified
+  descendant. Record the ancestry check; a rehearsal timestamp after the
+  deployment is not a substitute for testing the corrected send-response path.
 - The fleet-side operator records the exact live DB paths without printing
   secrets or message content.
 - The fleet-side operator confirms sufficient disk space and permissions for
@@ -105,6 +108,9 @@ live-path equality; do not weaken those checks for convenience.
   `jk-calendar-guard-agent` deployments.
 - A reviewed `CONTROL_PLANE_AGENTS=managerd` policy for the unified rehearsal
   bus and matching `control_plane=true` rows in both authority manifests.
+- A fleet-only, untracked
+  `CONTROL_PLANE_AGENT_SECRET_HASHES=managerd=<sha256>` value provisioned by
+  Joel. Do not print, copy into reports, or commit this secret-derived value.
 - Reviewed isolation plans for Ludi's local synthetic rehearsal and the
   fleet-side real-data rehearsal, including ports, network, volumes/paths, and
   credentials.
@@ -464,6 +470,9 @@ go run ./cmd/pinakes-migrate \
   allowlist.
 - Set `CONTROL_PLANE_AGENTS=managerd`; confirm the empty/default configuration
   grants no strict-mode exception and no name is hardcoded in the bus.
+- Joel provisions `CONTROL_PLANE_AGENT_SECRET_HASHES` in the fleet-side
+  deploying environment. Missing, extra, malformed, or mismatched entries must
+  stop startup; operators must not bypass this fail-closed condition.
 - Record the exact Pinakes build/tag and rendered non-secret configuration.
 
 ### 9.2 Empty-store plan of record
@@ -485,7 +494,9 @@ go run ./cmd/pinakes-migrate \
   observations after representative re-registration, and operational risks.
 
 The local synthetic proof uses the real SQLite store and HTTP handler with the
-candidate allowlist and distinct fabricated credentials:
+candidate allowlist and distinct fabricated credentials. It derives only
+fabricated control-plane hashes internally; neither raw credentials nor hashes
+appear in its report:
 
 ```bash
 CONTROL_PLANE_AGENTS=managerd \
@@ -497,10 +508,11 @@ CONTROL_PLANE_AGENTS=managerd \
 ```
 
 Require `status=passed`, `empty_before_registration=true`, distinct synthetic
-secrets, all three control-plane scopes, and rejection of the unlisted
-unprefixed probe. For fleet execution, also start the approved Pinakes build on
-an isolated non-production port/network from a new empty database and repeat
-the same registrations against its HTTP endpoint before recording success.
+secrets, all three control-plane scopes, rejection of wrong and missing
+control-plane credentials, and rejection of the unlisted unprefixed probe. For
+fleet execution, also start the approved Pinakes build on an isolated
+non-production port/network from a new empty database and repeat the same
+registrations against its HTTP endpoint before recording success.
 
 ### 9.4 Decision evidence and execution-gate record
 
@@ -641,7 +653,10 @@ the fleet-side operator performs the real-data rehearsal version.
 - Approved snapshot root, permissions, owner, retention period, and available
   space.
 - Approved Pinakes revision containing the manifest, candidate allowlist,
-  generator, migration tool, and rehearsal commands.
+  generator, migration tool, and rehearsal commands, with `77fb37f` verified as
+  an ancestor.
+- Joel-provisioned untracked control-plane hash configuration; its presence and
+  identity coverage may be attested, but its value must not enter evidence.
 - Manager-repository production allowlist path/revision to be changed only
   after the execution gate.
 - Fleet-side real-data rehearsal isolation topology and non-production ports.
