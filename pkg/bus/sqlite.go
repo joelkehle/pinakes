@@ -159,11 +159,32 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		}
 	}
 
-	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	// journal_mode=WAL is deliberately not set via the connection-string
+	// _pragma option here: that applies at connect time, before we get a
+	// chance to run our own PRAGMA auto_vacuum below, and switching into WAL
+	// mode writes the database's page 1 immediately (even with zero tables).
+	// auto_vacuum only takes effect without a VACUUM when the database is
+	// still completely empty, so it must run first against a database that
+	// has never been written to; setting it after the WAL switch silently
+	// no-ops. This ordering is the actual fix for issue #29.
+	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+
+	// Only actually converts brand-new database files (see comment above for
+	// why). An existing file created before this line was added keeps
+	// auto_vacuum=NONE until an operator runs `pinakes-db-compact` (see
+	// compact.go) during a maintenance window.
+	if _, err := db.Exec("PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set auto_vacuum: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set journal_mode: %w", err)
+	}
 
 	if _, err := db.Exec(sqliteSchema); err != nil {
 		db.Close()
@@ -292,7 +313,39 @@ func (s *SQLiteStore) pruneDB(now time.Time) error {
 		WHERE message_id NOT IN (SELECT message_id FROM messages)`); err != nil {
 		return err
 	}
-	return nil
+
+	// Reclaim freed pages back to the OS as we go, instead of only ever
+	// growing the freelist (issue #29: a 1.17 GB file with 99.86% free
+	// pages). This is a no-op until the database is in incremental
+	// auto_vacuum mode (fresh DBs get that on creation above; existing DBs
+	// need a one-time `pinakes-db-compact` to convert, see compact.go). The
+	// page cap keeps each prune sweep bounded instead of vacuuming the whole
+	// freelist in one call.
+	return runIncrementalVacuum(s.db, 1000)
+}
+
+// runIncrementalVacuum reclaims up to maxPages free pages. PRAGMA
+// incremental_vacuum(N) is implemented as a SQLite virtual table that frees
+// one page per row produced, so a plain Exec (which only asks the driver to
+// step the statement once) reclaims exactly one page and silently leaves the
+// rest; the pragma must be driven with Query and the result rows drained to
+// actually free all N pages. This is a no-op if the database is not in
+// incremental auto_vacuum mode.
+func runIncrementalVacuum(exec sqliteQueryer, maxPages int) error {
+	rows, err := exec.Query(fmt.Sprintf("PRAGMA incremental_vacuum(%d)", maxPages))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+	}
+	return rows.Err()
+}
+
+// sqliteQueryer is satisfied by *sqlx.DB; kept minimal so tests can pass a
+// bare *sql.DB-like value if ever needed.
+type sqliteQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
 }
 
 func ensureAgentColumns(db *sqlx.DB) error {
