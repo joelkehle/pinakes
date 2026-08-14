@@ -98,12 +98,27 @@ func MigrateJSONStateToSQLite(statePath, dbPath string, cfg Config) (bool, error
 func importStateToSQLite(state persistentState, dbPath string, cfg Config) (migrationCounts, error) {
 	var counts migrationCounts
 
-	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	// Same pragma ordering as NewSQLiteStore in sqlite.go, and for the same
+	// reason (issue #29): journal_mode=WAL is deliberately not set via the
+	// connection-string _pragma option, because that applies at connect
+	// time, before we get a chance to run our own PRAGMA auto_vacuum below.
+	// Switching into WAL mode writes the database's page 1 immediately, and
+	// auto_vacuum only takes effect without a VACUUM while the database is
+	// still completely empty — so it must run first, against a tmpPath file
+	// that has never been written to.
+	db, err := sqlx.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return counts, fmt.Errorf("open sqlite: %w", err)
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
+
+	if _, err := db.Exec("PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+		return counts, fmt.Errorf("set auto_vacuum: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		return counts, fmt.Errorf("set journal_mode: %w", err)
+	}
 
 	if _, err := db.Exec(sqliteSchema); err != nil {
 		return counts, fmt.Errorf("create schema: %w", err)
