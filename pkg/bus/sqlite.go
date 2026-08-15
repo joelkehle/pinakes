@@ -153,6 +153,17 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 	`
 
 func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
+	inner, err := NewStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid store configuration: %w", err)
+	}
+	storeReady := false
+	defer func() {
+		if !storeReady {
+			_ = inner.closePushWorkers()
+		}
+	}()
+
 	if dir := filepath.Dir(dbPath); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("create sqlite db dir: %w", err)
@@ -199,13 +210,6 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("migrate message schema: %w", err)
 	}
 
-	inner := NewStore(cfg)
-	storeReady := false
-	defer func() {
-		if !storeReady {
-			_ = inner.closePushWorkers()
-		}
-	}()
 	s := &SQLiteStore{
 		inner:                 inner,
 		db:                    db,

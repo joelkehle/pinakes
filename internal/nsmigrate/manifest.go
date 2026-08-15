@@ -1,6 +1,7 @@
 package nsmigrate
 
 import (
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -33,6 +34,7 @@ var manifestHeader = []string{
 	"disposition",
 	"owner_repo",
 	"evidence",
+	"control_plane",
 }
 
 type ManifestRow struct {
@@ -42,6 +44,7 @@ type ManifestRow struct {
 	Disposition     Disposition
 	OwnerRepo       string
 	Evidence        string
+	ControlPlane    bool
 	Line            int
 }
 
@@ -147,12 +150,52 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 	return manifest, nil
 }
 
+// WriteManifest writes the exact reviewed CSV contract in deterministic row
+// order. It does not reorder the manifest supplied by the caller.
+func WriteManifest(w io.Writer, manifest Manifest) error {
+	writer := csv.NewWriter(w)
+	if err := writer.Write(manifestHeader); err != nil {
+		return err
+	}
+	for _, row := range manifest.Rows {
+		record := []string{
+			string(row.SourceAuthority),
+			row.SourceID,
+			row.TargetID,
+			string(row.Disposition),
+			row.OwnerRepo,
+			row.Evidence,
+			fmt.Sprintf("%t", row.ControlPlane),
+		}
+		if err := writer.Write(record); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
+}
+
+// InvertManifest returns the exact undo plan and revalidates it through the
+// same parser used for an operator-supplied manifest.
+func InvertManifest(manifest Manifest) (Manifest, error) {
+	inverse := Manifest{Rows: make([]ManifestRow, 0, len(manifest.Rows))}
+	for _, row := range manifest.Rows {
+		row.SourceID, row.TargetID = row.TargetID, row.SourceID
+		inverse.Rows = append(inverse.Rows, row)
+	}
+	var encoded bytes.Buffer
+	if err := WriteManifest(&encoded, inverse); err != nil {
+		return Manifest{}, err
+	}
+	return ParseManifest(&encoded)
+}
+
 func validateHeader(header []string) error {
 	if len(header) > len(manifestHeader) {
 		return refuse(
 			"outside_rewrite_surface",
 			"manifest:1",
-			"manifest contains columns outside the six-column contract",
+			"manifest contains columns outside the seven-column contract",
 		)
 	}
 	if len(header) != len(manifestHeader) {
@@ -222,7 +265,15 @@ func parseManifestRow(record []string, line int) (ManifestRow, error) {
 		Disposition:     disposition,
 		OwnerRepo:       record[4],
 		Evidence:        record[5],
+		ControlPlane:    record[6] == "true",
 		Line:            line,
+	}
+	if record[6] != "true" && record[6] != "false" {
+		return ManifestRow{}, refuse(
+			"manifest_schema",
+			fmt.Sprintf("manifest:%d", line),
+			"control_plane must be true or false",
+		)
 	}
 	if err := validateMapping(row); err != nil {
 		return ManifestRow{}, err
@@ -232,6 +283,14 @@ func parseManifestRow(record []string, line int) (ManifestRow, error) {
 
 func validateMapping(row ManifestRow) error {
 	location := fmt.Sprintf("manifest:%d", row.Line)
+	if row.ControlPlane {
+		if row.Disposition != DispositionUnchanged || row.SourceID != row.TargetID {
+			return refuse("manifest_schema", location, "control_plane requires an unchanged row")
+		}
+		if strings.Contains(row.SourceID, ".") {
+			return refuse("manifest_schema", location, "control_plane identity must be unprefixed")
+		}
+	}
 	if foreignAuthorityScope(row.SourceAuthority, row.SourceID) ||
 		foreignAuthorityScope(row.SourceAuthority, row.TargetID) {
 		if row.Disposition != DispositionUnchanged || row.SourceID != row.TargetID {
@@ -246,7 +305,7 @@ func validateMapping(row ManifestRow) error {
 		if row.SourceID != row.TargetID {
 			return refuse("manifest_schema", location, "unchanged requires source_id == target_id")
 		}
-		if _, ok := explicitScope(row.SourceID); !ok {
+		if _, ok := explicitScope(row.SourceID); !ok && !row.ControlPlane {
 			return refuse("manifest_schema", location, "unchanged identity must already have an explicit namespace")
 		}
 		return nil

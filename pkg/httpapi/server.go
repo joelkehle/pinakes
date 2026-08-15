@@ -434,6 +434,7 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 
 	agent, err := s.store.RegisterAgent(bus.RegisterAgentInput{
 		AgentID:       req.AgentID,
+		Secret:        req.Secret,
 		AllowedScopes: req.AllowedScopes,
 		SharedGrants:  req.SharedGrants,
 		Capabilities:  req.Capabilities,

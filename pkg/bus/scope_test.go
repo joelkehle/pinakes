@@ -2,6 +2,7 @@ package bus
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"slices"
@@ -10,9 +11,15 @@ import (
 	"time"
 )
 
+const testControlPlaneSecret = "synthetic-manager-secret"
+
+func testControlPlaneHashes(agentID, secret string) map[string][sha256.Size]byte {
+	return map[string][sha256.Size]byte{agentID: sha256.Sum256([]byte(secret))}
+}
+
 func newScopeTestStore(logBuf *bytes.Buffer, sharedGrantAgents ...string) *Store {
 	logger := log.New(logBuf, "", 0)
-	return NewStore(Config{
+	return MustNewStore(Config{
 		Clock: func() time.Time {
 			return time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
 		},
@@ -23,8 +30,13 @@ func newScopeTestStore(logBuf *bytes.Buffer, sharedGrantAgents ...string) *Store
 
 func mustRegisterScoped(t *testing.T, s *Store, agentID string, scopes, grants []string) {
 	t.Helper()
+	secret := ""
+	if s.isConfiguredControlPlaneAgent(agentID) {
+		secret = testControlPlaneSecret
+	}
 	if _, err := s.RegisterAgent(RegisterAgentInput{
 		AgentID:       agentID,
+		Secret:        secret,
 		AllowedScopes: scopes,
 		SharedGrants:  grants,
 		Mode:          AgentModePull,
@@ -100,7 +112,7 @@ func TestUCLAPublishToPersonalDeniedAndLogged(t *testing.T) {
 
 func TestUnprefixedQueueNamesRejected(t *testing.T) {
 	var logs bytes.Buffer
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		NamespaceMode: NamespaceModeStrict,
 		Logger:        log.New(&logs, "", 0),
 		Clock: func() time.Time {
@@ -158,7 +170,7 @@ func TestCompatModeAcceptsLegacyIDsForRegisterSendAndPoll(t *testing.T) {
 
 func TestStrictModeRejectsLegacyIDs(t *testing.T) {
 	var logs bytes.Buffer
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		NamespaceMode: NamespaceModeStrict,
 		Logger:        log.New(&logs, "", 0),
 		Clock: func() time.Time {
@@ -181,6 +193,158 @@ func TestStrictModeRejectsLegacyIDs(t *testing.T) {
 	}
 	if _, _, err := s.PollInbox(PollInboxInput{AgentID: "legacy-target", Cursor: 0, Wait: 0}); err == nil {
 		t.Fatalf("expected strict mode to reject unprefixed inbox")
+	}
+}
+
+func TestStrictModeControlPlaneAgentHasAllScopes(t *testing.T) {
+	var logs bytes.Buffer
+	s := MustNewStore(Config{
+		NamespaceMode:                 NamespaceModeStrict,
+		ControlPlaneAgents:            []string{"managerd"},
+		ControlPlaneAgentSecretHashes: testControlPlaneHashes("managerd", testControlPlaneSecret),
+		SharedGrantAgents:             []string{"shared.target"},
+		Logger:                        log.New(&logs, "", 0),
+		Clock: func() time.Time {
+			return time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+		},
+	})
+
+	mustRegisterScoped(t, s, "managerd", nil, nil)
+	mustRegisterScoped(t, s, "personal.target", nil, nil)
+	mustRegisterScoped(t, s, "ucla.target", nil, nil)
+	mustRegisterScoped(t, s, "shared.target", nil, nil)
+
+	var manager Agent
+	for _, agent := range s.ListAgents("") {
+		if agent.AgentID == "managerd" {
+			manager = agent
+			break
+		}
+	}
+	if got := strings.Join(manager.AllowedScopes, ","); got != "personal,ucla,shared" {
+		t.Fatalf("control-plane allowed scopes = %q", got)
+	}
+	if got := strings.Join(manager.SharedGrants, ","); got != "shared" {
+		t.Fatalf("control-plane shared grants = %q", got)
+	}
+
+	for _, target := range []string{"personal.target", "ucla.target", "shared.target"} {
+		if _, _, err := s.SendMessage(SendMessageInput{
+			From:      "managerd",
+			To:        target,
+			RequestID: "rid-" + target,
+			Type:      MessageTypeInform,
+			Body:      "control-plane probe",
+		}); err != nil {
+			t.Fatalf("control-plane send to %s: %v", target, err)
+		}
+	}
+
+	if _, err := s.RegisterAgent(RegisterAgentInput{AgentID: "legacy-agent", Mode: AgentModePull}); err == nil {
+		t.Fatal("unlisted unprefixed identity registered in strict mode")
+	}
+}
+
+func TestScopedAgentCanAddressConfiguredControlPlaneQueue(t *testing.T) {
+	var logs bytes.Buffer
+	s := MustNewStore(Config{
+		NamespaceMode:                 NamespaceModeStrict,
+		ControlPlaneAgents:            []string{"managerd"},
+		ControlPlaneAgentSecretHashes: testControlPlaneHashes("managerd", testControlPlaneSecret),
+		Logger:                        log.New(&logs, "", 0),
+	})
+	mustRegisterScoped(t, s, "managerd", nil, nil)
+	mustRegisterScoped(t, s, "personal.sender", nil, nil)
+
+	message, _, err := s.SendMessage(SendMessageInput{
+		From:      "personal.sender",
+		To:        "managerd",
+		RequestID: "rid-control-plane",
+		Type:      MessageTypeInform,
+		Body:      "terminal notification",
+	})
+	if err != nil {
+		t.Fatalf("send to control-plane queue: %v", err)
+	}
+	events, _, err := s.PollInbox(PollInboxInput{AgentID: "managerd", Wait: 0})
+	if err != nil {
+		t.Fatalf("poll control-plane queue: %v", err)
+	}
+	if len(events) != 1 || events[0].MessageID != message.MessageID {
+		t.Fatalf("control-plane events = %#v", events)
+	}
+}
+
+func TestNamespacedControlPlaneConfigurationDoesNotEscalate(t *testing.T) {
+	_, err := NewStore(Config{
+		NamespaceMode:      NamespaceModeStrict,
+		ControlPlaneAgents: []string{"personal.admin"},
+		ControlPlaneAgentSecretHashes: testControlPlaneHashes(
+			"personal.admin",
+			testControlPlaneSecret,
+		),
+	})
+	if err == nil {
+		t.Fatal("namespaced control-plane configuration was accepted")
+	}
+}
+
+func TestControlPlaneCredentialBindingAppliesInCompatAndStrict(t *testing.T) {
+	for _, mode := range []NamespaceMode{NamespaceModeCompat, NamespaceModeStrict} {
+		t.Run(string(mode), func(t *testing.T) {
+			s := MustNewStore(Config{
+				NamespaceMode:                 mode,
+				LegacyScope:                   ScopePersonal,
+				ControlPlaneAgents:            []string{"managerd"},
+				ControlPlaneAgentSecretHashes: testControlPlaneHashes("managerd", testControlPlaneSecret),
+			})
+			if _, err := s.RegisterAgent(RegisterAgentInput{
+				AgentID: "managerd",
+				Secret:  "wrong-secret",
+				Mode:    AgentModePull,
+			}); err == nil {
+				t.Fatal("wrong credential claimed managerd")
+			}
+			if len(s.ListAgents("")) != 0 {
+				t.Fatal("rejected registration mutated agent state")
+			}
+			if _, err := s.RegisterAgent(RegisterAgentInput{
+				AgentID: "managerd",
+				Mode:    AgentModePull,
+			}); err == nil {
+				t.Fatal("missing credential claimed managerd")
+			}
+			mustRegisterScoped(t, s, "managerd", nil, nil)
+			var manager Agent
+			for _, agent := range s.ListAgents("") {
+				if agent.AgentID == "managerd" {
+					manager = agent
+				}
+			}
+			want := "personal"
+			if mode == NamespaceModeStrict {
+				want = "personal,ucla,shared"
+			}
+			if got := strings.Join(manager.AllowedScopes, ","); got != want {
+				t.Fatalf("allowed scopes = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestControlPlaneConfigurationFailsClosed(t *testing.T) {
+	tests := []Config{
+		{ControlPlaneAgents: []string{"managerd"}},
+		{ControlPlaneAgentSecretHashes: testControlPlaneHashes("managerd", testControlPlaneSecret)},
+		{
+			ControlPlaneAgents:            []string{"managerd"},
+			ControlPlaneAgentSecretHashes: testControlPlaneHashes("observer", testControlPlaneSecret),
+		},
+	}
+	for _, cfg := range tests {
+		if _, err := NewStore(cfg); err == nil {
+			t.Fatalf("invalid config accepted: %#v", cfg)
+		}
 	}
 }
 

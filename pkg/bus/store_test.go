@@ -13,7 +13,7 @@ import (
 func newTestStore(t *testing.T) (*Store, *time.Time) {
 	t.Helper()
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
-	store := NewStore(Config{
+	store := MustNewStore(Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,
@@ -263,7 +263,7 @@ func TestConcurrentIdempotentSendSingleDelivery(t *testing.T) {
 
 func TestInboxCursorAfterTrim(t *testing.T) {
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,

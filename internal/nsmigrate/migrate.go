@@ -11,15 +11,17 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/joelkehle/pinakes/pkg/bus"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type Options struct {
-	DBPath          string
-	Authority       Authority
-	Apply           bool
-	AcknowledgeCopy bool
+	DBPath             string
+	Authority          Authority
+	Apply              bool
+	AcknowledgeCopy    bool
+	ControlPlaneAgents []string
 }
 
 type mapping struct {
@@ -55,6 +57,9 @@ func Run(ctx context.Context, manifest Manifest, options Options) (Report, error
 	selected := selectMappings(manifest, options.Authority, &report)
 	if len(selected) == 0 {
 		return reject(report, "manifest_authority", "manifest", "manifest has no rows for the declared authority")
+	}
+	if err := validateControlPlaneAgreement(selected, options.ControlPlaneAgents); err != nil {
+		return rejectFromError(report, err)
 	}
 	database, err := openExistingDB(options.DBPath, options.Apply)
 	if err != nil {
@@ -113,6 +118,33 @@ func Run(ctx context.Context, manifest Manifest, options Options) (Report, error
 	committed = true
 	report.Status = "applied"
 	return report, nil
+}
+
+func validateControlPlaneAgreement(mappings []*mapping, configured []string) error {
+	manifestIDs := map[string]struct{}{}
+	for _, item := range mappings {
+		if item.ControlPlane {
+			manifestIDs[item.SourceID] = struct{}{}
+		}
+	}
+	normalized, err := bus.NormalizeControlPlaneAgents(configured)
+	if err != nil {
+		return refuse("control_plane_config", "CONTROL_PLANE_AGENTS", err.Error())
+	}
+	configuredIDs := map[string]struct{}{}
+	for _, agentID := range normalized {
+		configuredIDs[agentID] = struct{}{}
+	}
+	for agentID := range manifestIDs {
+		if _, ok := configuredIDs[agentID]; !ok {
+			return refuse(
+				"control_plane_mismatch",
+				"manifest",
+				fmt.Sprintf("control-plane identity %q is absent from CONTROL_PLANE_AGENTS", agentID),
+			)
+		}
+	}
+	return nil
 }
 
 func selectMappings(manifest Manifest, authority Authority, report *Report) []*mapping {

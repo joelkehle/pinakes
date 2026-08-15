@@ -33,7 +33,7 @@ func benchmarkBackends(cfg Config) []backendFactory {
 		{
 			name: "Memory",
 			make: func(b *testing.B) API {
-				return NewStore(cfg)
+				return MustNewStore(cfg)
 			},
 		},
 		{

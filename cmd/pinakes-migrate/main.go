@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/joelkehle/pinakes/internal/configutil"
 	"github.com/joelkehle/pinakes/internal/nsmigrate"
 )
 
@@ -67,10 +68,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	report, runErr := nsmigrate.Run(ctx, manifest, nsmigrate.Options{
-		DBPath:          *dbPath,
-		Authority:       authority,
-		Apply:           *apply,
-		AcknowledgeCopy: *acknowledgeCopy,
+		DBPath:             *dbPath,
+		Authority:          authority,
+		Apply:              *apply,
+		AcknowledgeCopy:    *acknowledgeCopy,
+		ControlPlaneAgents: configutil.SplitCSV(os.Getenv("CONTROL_PLANE_AGENTS")),
 	})
 	if err := writeReport(stdout, report); err != nil {
 		fmt.Fprintf(stderr, "write report: %v\n", err)

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -92,6 +94,15 @@ type Config struct {
 	// may access shared.* resources. Registration bodies may request grants,
 	// but only this policy takes effect.
 	SharedGrantAgents []string
+	// ControlPlaneAgents is the server-authoritative list of unprefixed trusted
+	// infrastructure identities that may register in strict mode and access
+	// personal.*, ucla.*, and shared.* resources. An empty list grants no
+	// exceptions. Names are configuration, never hardcoded in the bus.
+	ControlPlaneAgents []string
+	// ControlPlaneAgentSecretHashes binds every configured control-plane
+	// identity to SHA-256(secret). The map must exactly match
+	// ControlPlaneAgents. Raw secrets never belong in Config.
+	ControlPlaneAgentSecretHashes map[string][sha256.Size]byte
 }
 
 type idempotencyEntry struct {
@@ -129,6 +140,8 @@ type Store struct {
 	mu sync.Mutex
 
 	cfg Config
+
+	controlPlaneAgents map[string]struct{}
 
 	nextConversationID int64
 	nextMessageID      int64
@@ -179,7 +192,27 @@ type Store struct {
 	pushClosed  bool
 }
 
-func NewStore(cfg Config) *Store {
+func NewStore(cfg Config) (*Store, error) {
+	controlPlaneAgents, err := NormalizeControlPlaneAgents(cfg.ControlPlaneAgents)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ControlPlaneAgents = controlPlaneAgents
+	controlPlaneSet := make(map[string]struct{}, len(controlPlaneAgents))
+	for _, agentID := range controlPlaneAgents {
+		controlPlaneSet[agentID] = struct{}{}
+		if _, ok := cfg.ControlPlaneAgentSecretHashes[agentID]; !ok {
+			return nil, fmt.Errorf("control-plane identity %q is missing its configured secret hash", agentID)
+		}
+	}
+	for agentID := range cfg.ControlPlaneAgentSecretHashes {
+		if strings.TrimSpace(agentID) != agentID || agentID == "" || strings.Contains(agentID, ".") {
+			return nil, fmt.Errorf("control-plane secret-hash identity is invalid")
+		}
+		if _, ok := controlPlaneSet[agentID]; !ok {
+			return nil, fmt.Errorf("control-plane secret-hash identity %q is not configured", agentID)
+		}
+	}
 	if cfg.GracePeriod <= 0 {
 		cfg.GracePeriod = 30 * time.Second
 	}
@@ -291,6 +324,7 @@ func NewStore(cfg Config) *Store {
 	pushContext, pushCancel := context.WithCancel(context.Background())
 	s := &Store{
 		cfg:                  cfg,
+		controlPlaneAgents:   controlPlaneSet,
 		agents:               map[string]*Agent{},
 		conversations:        map[string]*Conversation{},
 		messages:             map[string]*Message{},
@@ -327,7 +361,17 @@ func NewStore(cfg Config) *Store {
 		}()
 	}
 
-	return s
+	return s, nil
+}
+
+// MustNewStore is intended for tests and static programmatic configuration.
+// Runtime entrypoints should use NewStore and handle configuration errors.
+func MustNewStore(cfg Config) *Store {
+	store, err := NewStore(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return store
 }
 
 func newObserveEpoch() string {
@@ -358,6 +402,11 @@ func (s *Store) logScopeDenied(action, identity, resource, reason string) {
 }
 
 func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) error {
+	if s.isControlPlaneAgent(agent.AgentID) {
+		if s.acceptsName(resource) {
+			return nil
+		}
+	}
 	scope, ok := s.scopeOfName(resource)
 	if !ok {
 		s.logScopeDenied(action, agent.AgentID, resource, "unprefixed resource")
@@ -377,10 +426,23 @@ func (s *Store) authorizeAgentForName(agent *Agent, action, resource string) err
 	return newError(CodeUnauthorized, "identity is not allowed to access this scope", false, 0)
 }
 
+func (s *Store) authorizeSendTarget(agent *Agent, resource string) error {
+	// This is the only ordinary-agent exception for a control-plane resource:
+	// it permits a new message to the queue without granting conversation
+	// discovery, read, join, or reuse access.
+	if s.isControlPlaneAgent(resource) {
+		return nil
+	}
+	return s.authorizeAgentForName(agent, "publish", resource)
+}
+
 func (s *Store) agentCanAccessName(agentID, resource string) bool {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		return true
+	}
+	if s.isControlPlaneAgent(agentID) {
+		return s.acceptsName(resource)
 	}
 	scope, ok := s.scopeOfName(resource)
 	if !ok {
@@ -1020,8 +1082,15 @@ func (s *Store) RegisterAgent(input RegisterAgentInput) (*Agent, error) {
 	if agentID == "" {
 		return nil, newError(CodeValidation, "agent_id is required", false, 0)
 	}
-	if _, ok := s.scopeOfName(agentID); !ok {
+	if !s.acceptsName(agentID) {
 		return nil, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
+	}
+	if s.isConfiguredControlPlaneAgent(agentID) {
+		expected := s.cfg.ControlPlaneAgentSecretHashes[agentID]
+		provided := sha256.Sum256([]byte(input.Secret))
+		if subtle.ConstantTimeCompare(provided[:], expected[:]) != 1 {
+			return nil, newError(CodeUnauthorized, "control-plane registration credential rejected", false, 0)
+		}
 	}
 	if _, err := normalizeScopes(input.AllowedScopes); err != nil {
 		return nil, err
@@ -1146,7 +1215,7 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 		if strings.TrimSpace(participant) == "" {
 			continue
 		}
-		if _, ok := s.scopeOfName(participant); !ok {
+		if !s.acceptsName(participant) {
 			return nil, newError(CodeValidation, "participants must be prefixed with personal., ucla., or shared.", false, 0)
 		}
 	}
@@ -1214,13 +1283,13 @@ func (s *Store) sendMessage(input SendMessageInput, commit func(*sendAcceptance)
 	if to == "" {
 		return nil, false, newError(CodeValidation, "to is required", false, 0)
 	}
-	if _, ok := s.scopeOfName(to); !ok {
+	if !s.acceptsName(to) {
 		return nil, false, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if from == "" {
 		return nil, false, newError(CodeValidation, "from is required", false, 0)
 	}
-	if _, ok := s.scopeOfName(from); !ok {
+	if !s.acceptsName(from) {
 		return nil, false, newError(CodeValidation, "from must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	if requestID == "" {
@@ -1256,7 +1325,7 @@ func (s *Store) sendMessage(input SendMessageInput, commit func(*sendAcceptance)
 	if err := s.authorizeAgentForName(sender, "publish", from); err != nil {
 		return nil, false, err
 	}
-	if err := s.authorizeAgentForName(sender, "publish", to); err != nil {
+	if err := s.authorizeSendTarget(sender, to); err != nil {
 		return nil, false, err
 	}
 	target, ok := s.agents[to]
@@ -1297,7 +1366,7 @@ func (s *Store) sendMessage(input SendMessageInput, commit func(*sendAcceptance)
 		conv.Participants = append([]string{}, existing.Participants...)
 		mergeConversationParticipantsLocked(&conv, []string{from, to})
 	} else {
-		if err := s.authorizeActorForNames(from, "conversation_create", []string{from, to}); err != nil {
+		if err := s.authorizeActorForNames(from, "conversation_create", []string{from}); err != nil {
 			return nil, false, err
 		}
 		conv = Conversation{
@@ -1455,7 +1524,7 @@ func (s *Store) pollInbox(input PollInboxInput, advance func(agentID string, cur
 	if agentID == "" {
 		return nil, 0, newError(CodeValidation, "agent_id is required", false, 0)
 	}
-	if _, ok := s.scopeOfName(agentID); !ok {
+	if !s.acceptsName(agentID) {
 		return nil, 0, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 
@@ -1753,7 +1822,7 @@ func (s *Store) inject(input InjectInput, commit func(*sendAcceptance) error) (*
 		return nil, newError(CodeValidation, "identity and body are required", false, 0)
 	}
 	if to != "" {
-		if _, ok := s.scopeOfName(to); !ok {
+		if !s.acceptsName(to) {
 			return nil, newError(CodeValidation, "to must be prefixed with personal., ucla., or shared.", false, 0)
 		}
 	}

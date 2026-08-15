@@ -48,7 +48,7 @@ func contractConfig(now time.Time) bus.Config {
 
 func newContractServer() http.Handler {
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
-	store := bus.NewStore(contractConfig(now))
+	store := bus.MustNewStore(contractConfig(now))
 	return NewServer(store)
 }
 
@@ -69,6 +69,147 @@ func newContractServerWithEnv(t *testing.T, env map[string]string) http.Handler 
 		t.Setenv(key, value)
 	}
 	return newContractServer()
+}
+
+func TestStrictModeControlPlaneRegistrationContract(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	cfg := contractConfig(now)
+	cfg.NamespaceMode = bus.NamespaceModeStrict
+	cfg.ControlPlaneAgents = []string{"managerd"}
+	cfg.SharedGrantAgents = []string{"shared.target"}
+	cfg.ControlPlaneAgentSecretHashes = map[string][sha256.Size]byte{
+		"managerd": sha256.Sum256([]byte("synthetic-manager-secret")),
+	}
+	handler := NewServer(bus.MustNewStore(cfg))
+
+	registration := map[string]any{
+		"agent_id": "managerd",
+		"mode":     "pull",
+		"ttl":      60,
+		"secret":   "synthetic-manager-secret",
+	}
+	body, err := json.Marshal(registration)
+	if err != nil {
+		t.Fatalf("marshal registration: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/agents/register", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("control-plane registration status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var listed struct {
+		Agents []bus.Agent `json:"agents"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode agents: %v", err)
+	}
+	if len(listed.Agents) != 1 || listed.Agents[0].AgentID != "managerd" {
+		t.Fatalf("agents = %#v", listed.Agents)
+	}
+	if got := strings.Join(listed.Agents[0].AllowedScopes, ","); got != "personal,ucla,shared" {
+		t.Fatalf("allowed scopes = %q", got)
+	}
+	if got := strings.Join(listed.Agents[0].SharedGrants, ","); got != "shared" {
+		t.Fatalf("shared grants = %q", got)
+	}
+
+	registration["agent_id"] = "unlisted-control-plane"
+	body, _ = json.Marshal(registration)
+	request = httptest.NewRequest(http.MethodPost, "/v1/agents/register", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unlisted unprefixed registration status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestStrictControlPlaneMessagingBoundaryContract(t *testing.T) {
+	now := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+	const managerSecret = "synthetic-manager-secret"
+	cfg := contractConfig(now)
+	cfg.NamespaceMode = bus.NamespaceModeStrict
+	cfg.ControlPlaneAgents = []string{"managerd"}
+	cfg.SharedGrantAgents = []string{"shared.target"}
+	cfg.ControlPlaneAgentSecretHashes = map[string][sha256.Size]byte{
+		"managerd": sha256.Sum256([]byte(managerSecret)),
+	}
+	store := bus.MustNewStore(cfg)
+	ts := httptest.NewServer(NewServer(store))
+	defer ts.Close()
+	c := ts.Client()
+
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", map[string]any{
+		"agent_id": "managerd", "mode": "pull", "ttl": 60, "secret": "wrong-secret",
+	}, nil), http.StatusUnauthorized)
+	if len(store.ListAgents("")) != 0 {
+		t.Fatal("wrong control-plane credential mutated registration state")
+	}
+
+	registrations := []map[string]any{
+		{"agent_id": "managerd", "mode": "pull", "ttl": 60, "secret": managerSecret},
+		{"agent_id": "personal.sender", "mode": "pull", "ttl": 60, "secret": "personal-secret"},
+		{"agent_id": "personal.target", "mode": "pull", "ttl": 60, "secret": "personal-target-secret"},
+		{"agent_id": "ucla.target", "mode": "pull", "ttl": 60, "secret": "ucla-target-secret"},
+		{"agent_id": "shared.target", "mode": "pull", "ttl": 60, "secret": "shared-target-secret"},
+	}
+	for _, registration := range registrations {
+		mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/agents/register", registration, nil), http.StatusOK)
+	}
+
+	sendToManager := map[string]any{
+		"to": "managerd", "from": "personal.sender", "request_id": "rid-rendezvous",
+		"type": "inform", "body": "terminal notification",
+	}
+	sendToManagerBody, _ := json.Marshal(sendToManager)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", sendToManager, map[string]string{
+		"X-Bus-Signature": signPayload("personal-secret", sendToManagerBody),
+	}), http.StatusOK)
+
+	allConversations := store.ListConversations(bus.ListConversationsFilter{})
+	if len(allConversations) != 1 {
+		t.Fatalf("global conversations = %#v", allConversations)
+	}
+	conversationID := allConversations[0].ConversationID
+	personalHeaders := map[string]string{
+		"X-Agent-ID":      "personal.sender",
+		"X-Bus-Signature": signPayload("personal-secret", nil),
+	}
+	listed := mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations", nil, personalHeaders), http.StatusOK)
+	if bytes.Contains(listed, []byte(conversationID)) {
+		t.Fatalf("scoped sender could list control-plane conversation: %s", listed)
+	}
+	mustStatus(t, doJSON(t, c, http.MethodGet, ts.URL+"/v1/conversations/"+conversationID+"/messages", nil, personalHeaders), http.StatusNotFound)
+
+	joinRequest := map[string]any{
+		"conversation_id": conversationID,
+		"participants":    []string{"personal.sender", "managerd"},
+	}
+	joinBody, _ := json.Marshal(joinRequest)
+	mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/conversations", joinRequest, map[string]string{
+		"X-Agent-ID":      "personal.sender",
+		"X-Bus-Signature": signPayload("personal-secret", joinBody),
+	}), http.StatusUnauthorized)
+
+	for _, target := range []string{"personal.target", "ucla.target", "shared.target"} {
+		request := map[string]any{
+			"to": target, "from": "managerd", "request_id": "rid-manager-" + target,
+			"type": "inform", "body": "control-plane publish",
+		}
+		body, _ := json.Marshal(request)
+		mustStatus(t, doJSON(t, c, http.MethodPost, ts.URL+"/v1/messages", request, map[string]string{
+			"X-Bus-Signature": signPayload(managerSecret, body),
+		}), http.StatusOK)
+	}
 }
 
 func doJSON(t *testing.T, c *http.Client, method, url string, body any, headers map[string]string) *http.Response {
@@ -441,7 +582,7 @@ func TestContractReregistrationSameSecretStillIdempotent(t *testing.T) {
 
 func TestContractLegacyEmptySecretReregistrationGrace(t *testing.T) {
 	now := time.Date(2026, 2, 17, 0, 0, 0, 0, time.UTC)
-	store := bus.NewStore(contractConfig(now))
+	store := bus.MustNewStore(contractConfig(now))
 	if _, err := store.RegisterAgent(bus.RegisterAgentInput{AgentID: "ucla.legacy", Mode: bus.AgentModePull, Capabilities: []string{"x"}, TTLSeconds: 60}); err != nil {
 		t.Fatalf("seed legacy agent: %v", err)
 	}

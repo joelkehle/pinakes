@@ -14,7 +14,7 @@ import (
 func TestSweepLockedRateLimited(t *testing.T) {
 	current := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return current }
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		IdempotencyWindow: 24 * time.Hour,
 		SweepMinInterval:  500 * time.Millisecond,
 		Clock:             clock,
@@ -82,7 +82,7 @@ func TestPollInboxIdleLongPollCheapWithBacklog(t *testing.T) {
 		mu.Unlock()
 	}
 
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,
@@ -159,7 +159,7 @@ func TestPollInboxIdleLongPollCheapWithBacklog(t *testing.T) {
 // promptly without depending on the timer firing.
 func TestPollInboxWakesOnAppend(t *testing.T) {
 	now := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,
@@ -229,7 +229,7 @@ func TestPollInboxWakesOnAppend(t *testing.T) {
 // TestObserveSinceWakesOnPublish confirms the observe notifier path also
 // replaces the 100ms sleep loop.
 func TestObserveSinceWakesOnPublish(t *testing.T) {
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,
@@ -290,7 +290,7 @@ func TestObserveSinceWakesOnPublish(t *testing.T) {
 // per call because sweepLocked walked the entire message map on every
 // invocation.
 func BenchmarkIdlePollInboxWithBacklog(b *testing.B) {
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,
@@ -346,7 +346,7 @@ func BenchmarkIdlePollInboxWithBacklog(b *testing.B) {
 // fix this should be O(log N) on a full observe ring; the prior
 // implementation was O(N).
 func BenchmarkIdleObserveSinceAtCursor(b *testing.B) {
-	s := NewStore(Config{
+	s := MustNewStore(Config{
 		GracePeriod:            30 * time.Second,
 		ProgressMinInterval:    2 * time.Second,
 		IdempotencyWindow:      24 * time.Hour,

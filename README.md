@@ -9,6 +9,10 @@ Current contents:
 - `pkg/busclient` - Go client SDK
 - `cmd/pinakes` - reference standalone server
 - `cmd/pinakes-migrate` - dry-run-first namespace migration rehearsal tool
+- `cmd/pinakes-migrate-fixture` - schema-true fabricated migration DB generator
+- `cmd/pinakes-manifest-invert` - exact inverse-manifest generator
+- `cmd/pinakes-manifest-allowlist` - post-migration allowlist generator
+- `cmd/pinakes-empty-strict-rehearsal` - isolated empty-store registration proof
 
 Endpoints:
 
@@ -48,6 +52,8 @@ Runtime config:
 - `BUS_NAMESPACE_MODE`
 - `BUS_LEGACY_SCOPE`
 - `SHARED_GRANT_AGENTS`
+- `CONTROL_PLANE_AGENTS`
+- `CONTROL_PLANE_AGENT_SECRET_HASHES`
 
 Contract doc:
 

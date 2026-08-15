@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joelkehle/pinakes/internal/configutil"
 	"github.com/joelkehle/pinakes/pkg/bus"
 	"github.com/joelkehle/pinakes/pkg/httpapi"
 )
@@ -50,21 +51,6 @@ func envInt(name string) int {
 		return -1
 	}
 	return v
-}
-
-func envCSV(name string) []string {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return nil
-	}
-	out := []string{}
-	for _, entry := range strings.Split(raw, ",") {
-		value := strings.TrimSpace(entry)
-		if value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 func parseNamespaceConfig(modeRaw, legacyScopeRaw string) (bus.NamespaceMode, bus.Scope, error) {
@@ -157,6 +143,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid namespace configuration: %v", err)
 	}
+	controlPlaneAgents := configutil.SplitCSV(os.Getenv("CONTROL_PLANE_AGENTS"))
+	controlPlaneAgentSecretHashes, err := configutil.ParseSHA256Map(os.Getenv("CONTROL_PLANE_AGENT_SECRET_HASHES"))
+	if err != nil {
+		log.Fatalf("invalid control-plane configuration: %v", err)
+	}
 
 	cfg := bus.Config{
 		GracePeriod:            30 * time.Second,
@@ -173,15 +164,17 @@ func main() {
 		MaxObserveEvents:       50000,
 		// Retention/byte-budget knobs default inside bus.NewStore; envs
 		// override. Set a *_SECONDS env to -1 to disable that knob.
-		MessageRetention:      envSeconds("MESSAGE_RETENTION_SECONDS"),
-		MessageMaxAge:         envSeconds("MESSAGE_MAX_AGE_SECONDS"),
-		ConversationRetention: envSeconds("CONVERSATION_RETENTION_SECONDS"),
-		AgentRetention:        envSeconds("AGENT_RETENTION_SECONDS"),
-		MaxInboxBytesPerAgent: envInt("MAX_INBOX_BYTES_PER_AGENT"),
-		MaxObserveBytes:       envInt("MAX_OBSERVE_BYTES"),
-		NamespaceMode:         namespaceMode,
-		LegacyScope:           legacyScope,
-		SharedGrantAgents:     envCSV("SHARED_GRANT_AGENTS"),
+		MessageRetention:              envSeconds("MESSAGE_RETENTION_SECONDS"),
+		MessageMaxAge:                 envSeconds("MESSAGE_MAX_AGE_SECONDS"),
+		ConversationRetention:         envSeconds("CONVERSATION_RETENTION_SECONDS"),
+		AgentRetention:                envSeconds("AGENT_RETENTION_SECONDS"),
+		MaxInboxBytesPerAgent:         envInt("MAX_INBOX_BYTES_PER_AGENT"),
+		MaxObserveBytes:               envInt("MAX_OBSERVE_BYTES"),
+		NamespaceMode:                 namespaceMode,
+		LegacyScope:                   legacyScope,
+		SharedGrantAgents:             configutil.SplitCSV(os.Getenv("SHARED_GRANT_AGENTS")),
+		ControlPlaneAgents:            controlPlaneAgents,
+		ControlPlaneAgentSecretHashes: controlPlaneAgentSecretHashes,
 	}
 
 	// Resolve DB path: --db flag > DB_PATH env > backend default. An explicit
@@ -220,7 +213,11 @@ func main() {
 		store = ss
 		log.Printf("using sqlite store at %s", dbPath)
 	case "memory":
-		store = bus.NewStore(cfg)
+		memoryStore, err := bus.NewStore(cfg)
+		if err != nil {
+			log.Fatalf("failed to initialize memory store: %v", err)
+		}
+		store = memoryStore
 	default:
 		// "persistent", "json", and (for backward compatibility) any other
 		// unrecognized value select the legacy JSON-file backend.

@@ -484,7 +484,7 @@ func (s *SQLiteStore) pollDurableInbox(input PollInboxInput) ([]InboxEvent, int,
 	if agentID == "" {
 		return nil, 0, newError(CodeValidation, "agent_id is required", false, 0)
 	}
-	if _, ok := s.inner.scopeOfName(agentID); !ok {
+	if !s.inner.acceptsName(agentID) {
 		return nil, 0, newError(CodeValidation, "agent_id must be prefixed with personal., ucla., or shared.", false, 0)
 	}
 	wait := input.Wait

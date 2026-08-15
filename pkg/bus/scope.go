@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -8,6 +9,12 @@ var validScopes = map[Scope]struct{}{
 	ScopePersonal: {},
 	ScopeUCLA:     {},
 	ScopeShared:   {},
+}
+
+var allScopeNames = []string{
+	string(ScopePersonal),
+	string(ScopeUCLA),
+	string(ScopeShared),
 }
 
 func ScopeOfName(name string) (Scope, bool) {
@@ -87,11 +94,53 @@ func agentAllowedScopes(agentID string) []string {
 }
 
 func (s *Store) agentAllowedScopes(agentID string) []string {
+	if s.isControlPlaneAgent(agentID) {
+		return cloneStrings(allScopeNames)
+	}
 	scope, ok := s.scopeOfName(agentID)
 	if !ok {
 		return nil
 	}
 	return []string{string(scope)}
+}
+
+// NormalizeControlPlaneAgents validates the shared configuration contract and
+// returns unique identities in declaration order.
+func NormalizeControlPlaneAgents(agents []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	normalized := []string{}
+	for _, raw := range agents {
+		agentID := strings.TrimSpace(raw)
+		if agentID == "" {
+			continue
+		}
+		if strings.Contains(agentID, ".") {
+			return nil, fmt.Errorf("control-plane identity %q must be unprefixed", agentID)
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		normalized = append(normalized, agentID)
+	}
+	return normalized, nil
+}
+
+func (s *Store) isConfiguredControlPlaneAgent(agentID string) bool {
+	_, ok := s.controlPlaneAgents[strings.TrimSpace(agentID)]
+	return ok
+}
+
+func (s *Store) isControlPlaneAgent(agentID string) bool {
+	return s.cfg.NamespaceMode == NamespaceModeStrict && s.isConfiguredControlPlaneAgent(agentID)
+}
+
+func (s *Store) acceptsName(name string) bool {
+	if s.isControlPlaneAgent(name) {
+		return true
+	}
+	_, ok := s.scopeOfName(name)
+	return ok
 }
 
 func (s *Store) agentHasScope(agentID string, scope Scope) bool {
@@ -107,6 +156,9 @@ func (s *Store) agentSharedGrants(agentID string) []string {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		return nil
+	}
+	if s.isControlPlaneAgent(agentID) {
+		return []string{string(ScopeShared)}
 	}
 	for _, raw := range s.cfg.SharedGrantAgents {
 		allowed := strings.TrimSpace(raw)
