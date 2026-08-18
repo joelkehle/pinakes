@@ -512,7 +512,7 @@ func (s *SQLiteStore) pollDurableInbox(input PollInboxInput) ([]InboxEvent, int,
 		notifier := s.inner.inboxNotifyChanLocked(agentID)
 		s.inner.mu.Unlock()
 
-		events, cursor, err := s.readDurableInbox(agentID, input.Cursor)
+		events, cursor, err := s.readDurableInbox(agentID, input.Cursor, input.Limit)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -563,7 +563,7 @@ func messageInboxEvent(message Message) InboxEvent {
 	}
 }
 
-func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]InboxEvent, int, error) {
+func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor, requestedLimit int) ([]InboxEvent, int, error) {
 	s.mu.Lock()
 	tx, err := s.db.Beginx()
 	if err != nil {
@@ -615,6 +615,9 @@ func (s *SQLiteStore) readDurableInbox(agentID string, requestedCursor int) ([]I
 	}
 
 	maxEvents, maxBytes := s.durableInboxBatchLimits()
+	if requestedLimit > 0 && requestedLimit < maxEvents {
+		maxEvents = requestedLimit
+	}
 	rows, err := tx.Query(`SELECT d.delivery_seq,
 			m.message_id, m.type, m.from_agent, m.to_agent, m.conversation_id,
 			m.request_id, m.in_reply_to, m.body, m.meta, m.attachments, m.state,

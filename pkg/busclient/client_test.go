@@ -43,6 +43,28 @@ func TestDoJSONReportsPartialResponseRead(t *testing.T) {
 	}
 }
 
+func TestPollInboxLimitedSendsSignedLimit(t *testing.T) {
+	t.Parallel()
+
+	const secret = "secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("limit") != "8" {
+			t.Fatalf("limit = %q, want 8", r.URL.Query().Get("limit"))
+		}
+		if got, want := r.Header.Get("X-Bus-Signature"), Sign(secret, []byte(r.URL.RawQuery)); got != want {
+			t.Fatalf("signature = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"events":[],"cursor":"7"}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	_, cursor, err := client.PollInboxLimited(context.Background(), "ucla.reader", secret, 3, 0, 8)
+	if err != nil || cursor != 7 {
+		t.Fatalf("PollInboxLimited cursor=%d error=%v", cursor, err)
+	}
+}
+
 func TestRegisterAgentWithDescriptionSendsDescription(t *testing.T) {
 	t.Parallel()
 

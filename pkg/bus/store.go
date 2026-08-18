@@ -1579,7 +1579,10 @@ func (s *Store) pollInbox(input PollInboxInput, advance func(agentID string, cur
 		if cursor < end {
 			start := cursor - base
 			out := append([]InboxEvent{}, events[start:]...)
-			next := end
+			if input.Limit > 0 && len(out) > input.Limit {
+				out = out[:input.Limit]
+			}
+			next := cursor + len(out)
 			s.mu.Unlock()
 			return out, next, nil
 		}

@@ -2,6 +2,7 @@ package bus
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -21,6 +22,28 @@ func registerDeliveryPair(t *testing.T, s *SQLiteStore) {
 		}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
+	}
+}
+
+func TestSQLiteInboxLimitPagesWithoutSkippingEvents(t *testing.T) {
+	s, err := NewSQLiteStore(filepath.Join(t.TempDir(), "limited-inbox.db"), Config{Clock: time.Now})
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	defer s.Close()
+	registerDeliveryPair(t, s)
+	for index := 0; index < 3; index++ {
+		if _, _, err := s.SendMessage(SendMessageInput{From: "ucla.sender", To: "ucla.receiver", RequestID: fmt.Sprintf("limited-%d", index), Type: MessageTypeInform, Body: "chunk"}); err != nil {
+			t.Fatalf("send %d: %v", index, err)
+		}
+	}
+	first, cursor, err := s.PollInbox(PollInboxInput{AgentID: "ucla.receiver", Limit: 2})
+	if err != nil || len(first) != 2 || cursor != 2 {
+		t.Fatalf("first page len=%d cursor=%d error=%v", len(first), cursor, err)
+	}
+	second, cursor, err := s.PollInbox(PollInboxInput{AgentID: "ucla.receiver", Cursor: cursor, Limit: 2})
+	if err != nil || len(second) != 1 || cursor != 3 {
+		t.Fatalf("second page len=%d cursor=%d error=%v", len(second), cursor, err)
 	}
 }
 

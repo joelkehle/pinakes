@@ -240,6 +240,7 @@ type PollInboxInput struct {
 	AgentID string
 	Cursor  int
 	Wait    time.Duration
+	Limit   int
 }
 
 type AckInput struct {

@@ -229,10 +229,19 @@ func (c *Client) CreateConversation(ctx context.Context, agentID, secret string,
 }
 
 func (c *Client) PollInbox(ctx context.Context, agentID, secret string, cursor int, waitSec int) ([]InboxEvent, int, error) {
+	return c.PollInboxLimited(ctx, agentID, secret, cursor, waitSec, 0)
+}
+
+// PollInboxLimited returns at most limit events and advances the cursor only
+// through those events. A non-positive limit preserves the existing behavior.
+func (c *Client) PollInboxLimited(ctx context.Context, agentID, secret string, cursor int, waitSec, limit int) ([]InboxEvent, int, error) {
 	q := url.Values{}
 	q.Set("agent_id", agentID)
 	q.Set("cursor", strconv.Itoa(cursor))
 	q.Set("wait", strconv.Itoa(waitSec))
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
 	rawQuery := q.Encode()
 	path := "/v1/inbox?" + rawQuery
 	headers := map[string]string{"X-Bus-Signature": Sign(secret, []byte(rawQuery))}

@@ -378,6 +378,11 @@ projection byte budget or an independent 32 MiB safety ceiling. Disabling
 projection byte eviction does not disable this response ceiling. The response
 cursor advances only through the returned batch.
 
+Callers may send a positive `limit` query parameter to `GET /v1/inbox`.
+The response then contains at most that many events, and its cursor advances
+only through those returned events. This lets clients page large chunked
+replies without asking the bus to build one very large HTTP response.
+
 Inbox poll-time reclamation: cursor values originate from prior poll responses, so a poll at cursor `C` proves the agent received every event below `C`; the bus frees those events immediately. Clients must not rely on re-reading inbox events below their last-acknowledged cursor (this was already unreliable under the count cap).
 
 Duplicate receipts are retained independently for the full 24-hour

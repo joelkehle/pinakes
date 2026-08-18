@@ -644,11 +644,13 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 
 	cursor := parseInt(r.URL.Query().Get("cursor"), 0)
 	wait := parseWaitSeconds(r.URL.Query().Get("wait"))
+	limit := parseInt(r.URL.Query().Get("limit"), 0)
 
 	events, next, err := s.store.PollInbox(bus.PollInboxInput{
 		AgentID: agentID,
 		Cursor:  cursor,
 		Wait:    wait,
+		Limit:   limit,
 	})
 	if err != nil {
 		writeBusError(w, err)
