@@ -9,8 +9,39 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
+
+func TestNewClientWithTimeoutUsesCallerDeadline(t *testing.T) {
+	t.Parallel()
+
+	client := NewClientWithTimeout("http://example.test", 90*time.Second)
+	if client.http.Timeout != 90*time.Second {
+		t.Fatalf("HTTP timeout = %s, want 90s", client.http.Timeout)
+	}
+	defaulted := NewClientWithTimeout("http://example.test", 0)
+	if defaulted.http.Timeout != defaultHTTPTimeout {
+		t.Fatalf("default HTTP timeout = %s, want %s", defaulted.http.Timeout, defaultHTTPTimeout)
+	}
+}
+
+func TestDoJSONReportsPartialResponseRead(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "20")
+		_, _ = w.Write([]byte(`{"ok":`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	_, _, err := client.DoJSON(context.Background(), http.MethodGet, "/partial", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "read GET /partial response") {
+		t.Fatalf("DoJSON error = %v, want explicit partial-read error", err)
+	}
+}
 
 func TestRegisterAgentWithDescriptionSendsDescription(t *testing.T) {
 	t.Parallel()

@@ -97,11 +97,23 @@ type Client struct {
 	http    *http.Client
 }
 
+const defaultHTTPTimeout = 15 * time.Second
+
 func NewClient(baseURL string) *Client {
+	return NewClientWithTimeout(baseURL, defaultHTTPTimeout)
+}
+
+// NewClientWithTimeout lets callers that expect bounded large or long-poll
+// responses choose an HTTP deadline. Operation contexts remain the outer
+// deadline. Non-positive values retain the normal client default.
+func NewClientWithTimeout(baseURL string, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = defaultHTTPTimeout
+	}
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		http: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }
@@ -128,7 +140,10 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, payload []byte
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	blob, _ := io.ReadAll(resp.Body)
+	blob, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return blob, resp.StatusCode, fmt.Errorf("read %s %s response: %w", method, path, readErr)
+	}
 	if resp.StatusCode >= 400 {
 		return blob, resp.StatusCode, fmt.Errorf("%s %s failed status=%d body=%s", method, path, resp.StatusCode, string(blob))
 	}
