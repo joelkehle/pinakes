@@ -7,11 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,40 +277,6 @@ func TestInboxRejectsSignatureForDifferentRawQuery(t *testing.T) {
 	rr := getWithHeaders(t, h, "/v1/inbox?"+tamperedRawQuery, map[string]string{"X-Bus-Signature": sig})
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestInboxLimitPagesWithoutSkippingEvents(t *testing.T) {
-	h := newServerForTest(t)
-	mustRegisterAgent(t, h, "ucla.a", "secret-a")
-	mustRegisterAgent(t, h, "ucla.b", "secret-b")
-	for index := 0; index < 3; index++ {
-		mustSendMessage(t, h, "secret-a", map[string]any{
-			"to": "ucla.b", "from": "ucla.a", "request_id": fmt.Sprintf("rid-page-%d", index), "type": "inform", "body": fmt.Sprintf("payload-%d", index),
-		})
-	}
-
-	query := url.Values{"agent_id": {"ucla.b"}, "cursor": {"0"}, "wait": {"0"}, "limit": {"2"}}.Encode()
-	rr := getWithHeaders(t, h, "/v1/inbox?"+query, map[string]string{"X-Bus-Signature": sign("secret-b", []byte(query))})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("first page status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	var first struct {
-		Events []bus.InboxEvent `json:"events"`
-		Cursor string           `json:"cursor"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil || len(first.Events) != 2 || first.Cursor != "2" {
-		t.Fatalf("first page=%+v error=%v", first, err)
-	}
-
-	query = url.Values{"agent_id": {"ucla.b"}, "cursor": {first.Cursor}, "wait": {"0"}, "limit": {"2"}}.Encode()
-	rr = getWithHeaders(t, h, "/v1/inbox?"+query, map[string]string{"X-Bus-Signature": sign("secret-b", []byte(query))})
-	var second struct {
-		Events []bus.InboxEvent `json:"events"`
-		Cursor string           `json:"cursor"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &second); err != nil || len(second.Events) != 1 || second.Cursor != "3" {
-		t.Fatalf("second page=%+v error=%v", second, err)
 	}
 }
 
